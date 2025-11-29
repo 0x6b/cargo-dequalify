@@ -16,6 +16,7 @@ toml = "0.9.8"
 serde = { version = "1.0.228", features = ["derive"] }
 dunce = "1.0.5"
 proc-macro2 = { version = "1.0.103", features = ["span-locations"], default-features = false }
+gix = { version = "0.72", default-features = false, features = ["status"] }
 
 [dev-dependencies]
 tempfile = "3"

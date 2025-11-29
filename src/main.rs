@@ -16,6 +16,8 @@ use rewrite::process_file;
 use serde::Deserialize;
 use std::env::args;
 use toml::from_str;
+use gix::discover;
+
 
 /// cargo-dequalify
 ///
@@ -40,6 +42,10 @@ struct Cli {
     /// Actually modify files (default: dry-run mode).
     #[arg(short, long)]
     write: bool,
+
+    /// Allow running --write on a dirty git working directory.
+    #[arg(long)]
+    allow_dirty: bool,
 
     /// Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc").
     #[arg(long, value_delimiter = ',')]
@@ -74,6 +80,15 @@ fn main() -> Result<()> {
 
     let workspace = load_workspace(&cargo_toml_path)
         .with_context(|| format!("failed to load workspace from {}", cargo_toml_path.display()))?;
+
+    // Check for dirty git working directory when --write is used
+    if cli.write && !cli.allow_dirty && is_git_dirty(&root) {
+        anyhow::bail!(
+            "working directory has uncommitted changes, \
+             please commit or stash them before running with --write, \
+             or use --allow-dirty to override"
+        );
+    }
 
     let crate_roots = workspace_crate_roots(&cargo_toml_path, &workspace);
 
@@ -118,6 +133,23 @@ fn run_cargo_fmt(toolchain: Option<&str>) -> Result<()> {
         anyhow::bail!("cargo fmt failed with {}", status);
     }
     Ok(())
+}
+
+/// Check if the git working directory is dirty (has uncommitted changes).
+fn is_git_dirty(path: &Path) -> bool {
+    let Ok(repo) = discover(path) else {
+        return false; // Not a git repo
+    };
+
+    let Ok(platform) = repo.status(gix::progress::Discard) else {
+        return false;
+    };
+
+    let Ok(iter) = platform.into_index_worktree_iter(None) else {
+        return false;
+    };
+
+    iter.take(1).count() > 0
 }
 
 /// Represents just enough of Cargo.toml for our purposes.
