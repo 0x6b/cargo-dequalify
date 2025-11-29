@@ -21,6 +21,7 @@ use walkdir::WalkDir;
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// File or directory to process (recursively for directories)
+    #[arg(default_value = ".")]
     target: PathBuf,
 
     /// Actually modify files (default: dry-run mode)

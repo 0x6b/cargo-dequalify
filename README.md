@@ -32,24 +32,25 @@ cargo install --git https://github.com/0x6b/dequalify
 ## Usage
 
 ```sh
-# Preview changes (default, dry-run mode)
-dequalify src/main.rs
+# Preview changes in current directory (default: dry-run mode)
+dequalify
 
-# Process a directory recursively
+# Process a specific file or directory
+dequalify src/main.rs
 dequalify src/
 
 # Actually modify files
+dequalify -w
 dequalify --write src/
-dequalify -w src/
 
 # Verbose output
-dequalify --verbose src/
+dequalify --verbose
 
 # Ignore specific root modules (e.g., std, core)
-dequalify --ignore-roots std,core src/
+dequalify --ignore-roots std,core
 
 # Use aliases when names conflict
-dequalify --alias-on-conflict src/
+dequalify --alias-on-conflict
 ```
 
 ## Conflict Handling
