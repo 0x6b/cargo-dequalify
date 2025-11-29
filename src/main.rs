@@ -48,12 +48,12 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     ignore_roots: Vec<String>,
 
-    /// When a short name would conflict, import with an alias and rewrite calls.
+    /// When a short name would conflict, import the parent module instead.
     /// Example:
     ///   tokio::task::spawn(foo())
     ///   =>
-    ///   use tokio::task::spawn as tokio_task_spawn;
-    ///   tokio_task_spawn(foo());
+    ///   use tokio::task;
+    ///   task::spawn(foo());
     #[arg(long)]
     alias_on_conflict: bool,
 

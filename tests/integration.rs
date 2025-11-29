@@ -53,7 +53,8 @@ fn main() {
 
 #[test]
 fn test_rewrite_crate_self_super() {
-    // crate:: and self:: paths should be rewritten, but only one can use the short name
+    // Both paths have same short name (helper) and same parent (inner)
+    // They conflict at all levels, so neither can be rewritten
     let input = r#"
 mod inner {
     pub fn helper() {}
@@ -64,12 +65,10 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-    // First one gets imported
-    assert!(output.contains("use crate::inner::helper;"));
-    // Second one conflicts with the first, so it stays fully qualified
+    // Both conflict at all levels (helper, inner), can't be resolved
+    // They remain unchanged
+    assert!(output.contains("crate::inner::helper()"));
     assert!(output.contains("self::inner::helper()"));
-    // First call is rewritten to short name
-    assert!(output.contains("helper()"));
 }
 
 #[test]
@@ -124,6 +123,7 @@ fn main() {
 
 #[test]
 fn test_alias_on_conflict() {
+    // With --alias-on-conflict, use parent module import instead of alias
     let input = r#"
 fn spawn() {}
 
@@ -133,12 +133,14 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], true);
-    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn;"));
-    assert!(output.contains("tokio_task_spawn(async"));
+    // Import parent module instead of aliasing
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_alias_conflict_with_import() {
+    // With --alias-on-conflict, use parent module import instead of alias
     let input = r#"
 use other::spawn;
 
@@ -148,8 +150,9 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], true);
-    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn;"));
-    assert!(output.contains("tokio_task_spawn(async"));
+    // Import parent module instead of aliasing
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
@@ -234,18 +237,23 @@ fn main() {
 }
 
 #[test]
-fn test_alias_numbering_on_multiple_conflicts() {
+fn test_parent_module_on_multiple_conflicts() {
+    // When function name conflicts, import parent module
+    // When parent module also conflicts, go up another level
+    // But if that results in same-as-original, it can't be resolved
     let input = r#"
 fn spawn() {}
-fn tokio_task_spawn() {}
+fn task() {}
 
 fn main() {
     tokio::task::spawn(async {});
 }
 "#;
     let output = process_source(input, &[], true);
-    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn_1;"));
-    assert!(output.contains("tokio_task_spawn_1(async"));
+    // spawn conflicts, task conflicts, tokio would be same-as-original
+    // Can't be resolved, stays unchanged
+    assert!(output.contains("tokio::task::spawn(async"));
+    assert!(!output.contains("use tokio;"));
 }
 
 #[test]
@@ -448,7 +456,8 @@ fn main() {
 
 #[test]
 fn test_conflict_between_new_imports() {
-    // Multiple paths with the same short name should conflict with each other
+    // Multiple 2-segment paths with same short name can't be resolved
+    // (at level 1, it would be same-as-original)
     let input = r#"
 fn main() {
     module_a::handle();
@@ -457,31 +466,48 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-    // Only the first one should be imported without alias
-    assert!(output.contains("use module_a::handle;"));
-    // The rest should remain fully qualified (conflict detected)
+    // All three conflict on 'handle', can't go up further without being same-as-original
+    // All remain unchanged
+    assert!(output.contains("module_a::handle()"));
     assert!(output.contains("module_b::handle()"));
     assert!(output.contains("module_c::handle()"));
 }
 
 #[test]
-fn test_conflict_between_new_imports_with_alias() {
-    // With alias_on_conflict, all should get unique aliases
+fn test_conflict_between_new_imports_with_parent_module() {
+    // Paths with same short name AND same parent name can't be resolved
     let input = r#"
 fn main() {
-    module_a::handle();
-    module_b::handle();
-    module_c::handle();
+    module_a::sub::handle();
+    module_b::sub::handle();
+    module_c::sub::handle();
 }
 "#;
     let output = process_source(input, &[], true);
-    // First one gets the short name
-    assert!(output.contains("use module_a::handle;"));
-    // Others get aliases
-    assert!(output.contains("use module_b::handle as module_b_handle;"));
-    assert!(output.contains("use module_c::handle as module_c_handle;"));
-    // Calls are rewritten
-    assert!(output.contains("handle()"));
-    assert!(output.contains("module_b_handle()"));
-    assert!(output.contains("module_c_handle()"));
+    // All three conflict on 'handle', all three conflict on 'sub'
+    // Going to level 1 would be same-as-original, so can't be resolved
+    assert!(output.contains("module_a::sub::handle()"));
+    assert!(output.contains("module_b::sub::handle()"));
+    assert!(output.contains("module_c::sub::handle()"));
+}
+
+#[test]
+fn test_conflict_resolved_with_different_parents() {
+    // Paths with same short name but DIFFERENT parent names can be resolved
+    let input = r#"
+fn main() {
+    module_a::foo::handle();
+    module_b::bar::handle();
+    module_c::baz::handle();
+}
+"#;
+    let output = process_source(input, &[], true);
+    // All three conflict on 'handle', so all go up to parent level
+    // foo, bar, baz are all different, so no conflict
+    assert!(output.contains("use module_a::foo;"));
+    assert!(output.contains("use module_b::bar;"));
+    assert!(output.contains("use module_c::baz;"));
+    assert!(output.contains("foo::handle()"));
+    assert!(output.contains("bar::handle()"));
+    assert!(output.contains("baz::handle()"));
 }

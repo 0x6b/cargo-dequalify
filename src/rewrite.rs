@@ -102,47 +102,163 @@ impl<'a> Visit<'_> for PathCollector<'a> {
     }
 }
 
-// Manages conflict detection and alias generation.
-struct ConflictResolver {
-    imported_idents: BTreeSet<String>,
-    local_idents: BTreeSet<String>,
-    aliases: BTreeMap<String, String>,
+/// Represents a path's import strategy at a given level.
+/// `import_len` is how many segments to import (from the start).
+/// For path `a::b::c::func` with 4 segments:
+/// - import_len=4: `use a::b::c::func;` → `func()`
+/// - import_len=3: `use a::b::c;` → `c::func()`
+/// - import_len=2: `use a::b;` → `b::c::func()`
+/// - import_len=1: `use a;` → `a::b::c::func()` (same as original, skip)
+#[derive(Clone)]
+struct ImportStrategy {
+    full_path: String,
+    segments: Vec<String>,
+    import_len: usize,
 }
 
-impl ConflictResolver {
-    fn new(imported_idents: BTreeSet<String>, local_idents: BTreeSet<String>) -> Self {
+impl ImportStrategy {
+    fn new(full_path: &str) -> Self {
+        let segments: Vec<String> = full_path.split("::").map(String::from).collect();
+        let import_len = segments.len();
         Self {
-            imported_idents,
-            local_idents,
-            aliases: BTreeMap::new(),
+            full_path: full_path.to_string(),
+            segments,
+            import_len,
         }
     }
 
-    fn has_conflict(&self, ident: &str) -> bool {
-        self.imported_idents.contains(ident) || self.local_idents.contains(ident)
+    /// The identifier that will be imported (brought into scope)
+    fn import_ident(&self) -> &str {
+        &self.segments[self.import_len - 1]
     }
 
-    fn is_used(&self, name: &str) -> bool {
-        self.imported_idents.contains(name)
-            || self.local_idents.contains(name)
-            || self.aliases.values().any(|v| v == name)
+    /// Try to go up one level (import less, use more prefix in call)
+    fn go_up(&mut self) -> bool {
+        if self.import_len > 1 {
+            self.import_len -= 1;
+            true
+        } else {
+            false
+        }
     }
 
-    // Get or create an alias for a conflicting full path.
-    fn alias_for(&mut self, full_path_str: &str) -> String {
-        if let Some(alias) = self.aliases.get(full_path_str) {
-            return alias.clone();
-        }
-        let base = full_path_str.replace("::", "_");
-        let mut candidate = base.clone();
-        let mut idx = 1;
-        while self.is_used(&candidate) {
-            candidate = format!("{base}_{idx}");
-            idx += 1;
-        }
-        self.aliases.insert(full_path_str.to_string(), candidate.clone());
-        candidate
+    /// Check if this strategy results in same call as original (no benefit)
+    fn is_same_as_original(&self) -> bool {
+        self.import_len == 1
     }
+
+    /// Generate use statement
+    fn use_statement(&self) -> String {
+        format!("use {};", self.segments[..self.import_len].join("::"))
+    }
+
+    /// Generate call replacement text
+    fn replacement(&self) -> String {
+        if self.import_len == self.segments.len() {
+            // Import the function itself
+            self.segments.last().unwrap().clone()
+        } else {
+            // Import a parent, use prefix::...::func
+            format!(
+                "{}::{}",
+                self.segments[self.import_len - 1],
+                self.segments[self.import_len..].join("::")
+            )
+        }
+    }
+}
+
+/// Multi-pass conflict resolution.
+/// Groups paths by their import identifier and bumps conflicting groups up one level.
+///
+/// If `resolve_conflicts` is false, paths that conflict with existing_idents are excluded
+/// from the result (they should be skipped entirely).
+fn resolve_all_imports(
+    paths: &[String],
+    existing_idents: &BTreeSet<String>,
+    resolve_conflicts: bool,
+) -> BTreeMap<String, ImportStrategy> {
+    let mut strategies: Vec<ImportStrategy> = paths.iter().map(|p| ImportStrategy::new(p)).collect();
+
+    // Phase 1: Resolve conflicts between new imports
+    // Keep bumping until no more internal conflicts
+    loop {
+        // Group by import_ident (only for paths that aren't at same-as-original level)
+        let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (idx, strategy) in strategies.iter().enumerate() {
+            if !strategy.is_same_as_original() {
+                groups
+                    .entry(strategy.import_ident().to_string())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        // Find groups with internal conflicts (size > 1)
+        let mut has_conflict = false;
+        for (_ident, indices) in &groups {
+            if indices.len() > 1 {
+                // Bump all members of this group up one level
+                for &idx in indices {
+                    if strategies[idx].go_up() {
+                        has_conflict = true;
+                    }
+                }
+            }
+        }
+
+        if !has_conflict {
+            break;
+        }
+    }
+
+    // Phase 2: Handle conflicts with existing idents
+    if resolve_conflicts {
+        // Try to resolve by going up levels
+        loop {
+            let mut has_conflict = false;
+            for strategy in &mut strategies {
+                if !strategy.is_same_as_original()
+                    && existing_idents.contains(strategy.import_ident())
+                {
+                    if strategy.go_up() {
+                        has_conflict = true;
+                    }
+                }
+            }
+            if !has_conflict {
+                break;
+            }
+        }
+    }
+
+    // Phase 3: Build result, excluding invalid strategies
+    let mut used_idents: BTreeSet<String> = BTreeSet::new();
+    let mut result: BTreeMap<String, ImportStrategy> = BTreeMap::new();
+
+    for strategy in strategies {
+        // Skip if it would be same as original (no benefit)
+        if strategy.is_same_as_original() {
+            continue;
+        }
+
+        let import_ident = strategy.import_ident().to_string();
+
+        // Skip if conflicts with existing idents and we're not resolving conflicts
+        if !resolve_conflicts && existing_idents.contains(&import_ident) {
+            continue;
+        }
+
+        // Skip if this ident is already used by another path
+        if used_idents.contains(&import_ident) {
+            continue;
+        }
+
+        used_idents.insert(import_ident);
+        result.insert(strategy.full_path.clone(), strategy);
+    }
+
+    result
 }
 
 // A text replacement to apply.
@@ -175,7 +291,10 @@ pub fn process_file(
 
     let imported_idents = collect_imported_idents(&ast);
     let local_idents = collect_local_idents(&ast);
-    let mut resolver = ConflictResolver::new(imported_idents.clone(), local_idents.clone());
+    let existing_idents: BTreeSet<String> = imported_idents
+        .union(&local_idents)
+        .cloned()
+        .collect();
 
     let file_path_str = path.display().to_string();
     let line_offsets = LineOffsets::new(&src);
@@ -186,33 +305,36 @@ pub fn process_file(
         occ_by_path.entry(&occ.full_path_str).or_default().push(occ);
     }
 
+    // Collect all unique paths
+    let all_paths: Vec<String> = collector.paths.keys().cloned().collect();
+
+    // Resolve all imports using multi-pass algorithm
+    let strategies = resolve_all_imports(&all_paths, &existing_idents, alias_on_conflict);
+
     // Build replacements for each occurrence
     let mut replacements: Vec<Replacement> = Vec::new();
     let mut use_statements: Vec<String> = Vec::new();
 
     for (full_path_str, info) in &collector.paths {
-        let has_conflict = resolver.has_conflict(&info.last_ident);
-
-        if has_conflict && !alias_on_conflict {
-            eprintln!(
-                "conflict in {}:{}: identifier `{}` is already defined/imported; \
-                 skipping rewrite of `{}`",
-                file_path_str, info.line, info.last_ident, full_path_str
-            );
+        let Some(strategy) = strategies.get(full_path_str) else {
+            // Path couldn't be resolved (all levels conflict with existing idents)
+            if !alias_on_conflict {
+                eprintln!(
+                    "conflict in {}:{}: identifier `{}` is already defined/imported; \
+                     skipping rewrite of `{}`",
+                    file_path_str, info.line, info.last_ident, full_path_str
+                );
+            } else {
+                eprintln!(
+                    "conflict in {}:{}: cannot resolve `{}` without conflicts at any level",
+                    file_path_str, info.line, full_path_str
+                );
+            }
             continue;
-        }
-
-        let replacement_text = if has_conflict {
-            let alias = resolver.alias_for(full_path_str);
-            use_statements.push(format!("use {} as {};", full_path_str, alias));
-            alias
-        } else {
-            use_statements.push(format!("use {};", full_path_str));
-            // Mark this ident as used so subsequent paths with the same short name
-            // will be detected as conflicts
-            resolver.imported_idents.insert(info.last_ident.clone());
-            info.last_ident.clone()
         };
+
+        use_statements.push(strategy.use_statement());
+        let replacement_text = strategy.replacement();
 
         // Create replacements for all occurrences of this path
         if let Some(occurrences) = occ_by_path.get(full_path_str.as_str()) {
