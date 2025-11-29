@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     }
 
     if any_changes && !cli.write {
-        eprintln!("---\nRun with -w to apply changes.");
+        eprintln!("# Run with -w to apply changes.");
     }
 
     Ok(())
