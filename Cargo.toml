@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+similar = "2"
 walkdir = "2"
 syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }

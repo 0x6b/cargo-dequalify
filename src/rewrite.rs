@@ -4,6 +4,8 @@ use std::{
     path::Path,
 };
 
+use similar::{ChangeTag, TextDiff};
+
 use anyhow::{Context, Result};
 use syn::{
     ExprCall, File, Item, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStatic, ItemStruct,
@@ -246,7 +248,7 @@ pub fn process_file(
     }
 
     if dry_run {
-        println!("would modify: {}", path.display());
+        print_diff(path, &src, &new_src);
         return Ok(true);
     }
 
@@ -442,5 +444,25 @@ fn collect_pattern_idents(pat: &Pat, out: &mut BTreeSet<String>) {
             }
         }
         _ => {}
+    }
+}
+
+fn print_diff(path: &Path, old: &str, new: &str) {
+    let diff = TextDiff::from_lines(old, new);
+    println!("--- {}", path.display());
+    println!("+++ {}", path.display());
+    for hunk in diff.unified_diff().context_radius(3).iter_hunks() {
+        println!("{}", hunk.header());
+        for change in hunk.iter_changes() {
+            let sign = match change.tag() {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
+            print!("{}{}", sign, change);
+            if change.missing_newline() {
+                println!();
+            }
+        }
     }
 }
