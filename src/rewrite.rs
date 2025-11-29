@@ -407,25 +407,38 @@ impl LineOffsets {
         }
         Some(line_start + char_offsets[col])
     }
+
+    // Get the byte offset at the end of a line (after the last character, before newline).
+    // Line is 1-indexed.
+    fn line_end_byte(&self, line: usize) -> usize {
+        if line == 0 || line > self.lines.len() {
+            return 0;
+        }
+        let (line_start, char_offsets) = &self.lines[line - 1];
+        // Return position after last character (which is where the newline would be)
+        line_start + char_offsets.last().map(|&o| o + 1).unwrap_or(0)
+    }
 }
 
 // Find the byte position where use statements should be inserted.
 fn find_use_insert_position(ast: &File, line_offsets: &LineOffsets) -> usize {
-    let mut last_use_end: Option<usize> = None;
+    let mut last_use_line: Option<usize> = None;
 
     for item in &ast.items {
         if let Item::Use(item_use) = item {
             let span = item_use.span();
             let end_line = span.end().line;
-            let end_col = span.end().column;
-            if let Some(byte_pos) = line_offsets.line_col_to_byte(end_line, end_col) {
-                last_use_end = Some(byte_pos);
-            }
+            last_use_line = Some(end_line);
         }
     }
 
-    // Return the position after the last use statement, or 0 if none exist
-    last_use_end.unwrap_or(0)
+    // Return the byte position at the end of the line containing the last use statement.
+    // This ensures we don't insert in the middle of trailing comments.
+    if let Some(line) = last_use_line {
+        line_offsets.line_end_byte(line)
+    } else {
+        0
+    }
 }
 
 // Collect the identifiers that are already imported into the file via `use`.

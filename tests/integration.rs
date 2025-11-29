@@ -527,3 +527,22 @@ fn main() {
     assert!(output.contains("bar::handle()"));
     assert!(output.contains("baz::handle()"));
 }
+
+#[test]
+fn test_preserves_trailing_comment_on_use() {
+    // New imports should be inserted after the trailing comment, not in the middle of it
+    let input = r#"
+use crate::CompileParams; // For documentation purposes.
+
+fn main() {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    // The trailing comment should remain intact
+    assert!(output.contains("use crate::CompileParams; // For documentation purposes."));
+    assert!(output.contains("use tokio::task::spawn;"));
+    // The new import should NOT be inserted in the middle of the comment
+    // (the broken pattern would be "// For documentat\nuse tokio::task::spawn;")
+    assert!(!output.contains("// For documentat\n"));
+}
