@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{fs::read_to_string, io::Write};
 
 use dequalify::process_file;
 use tempfile::NamedTempFile;
@@ -7,10 +7,8 @@ fn process_source(src: &str, ignore_roots: &[String], alias_on_conflict: bool) -
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(src.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
     process_file(&path, ignore_roots, false, alias_on_conflict).unwrap();
-
-    std::fs::read_to_string(&path).unwrap()
+    read_to_string(&path).unwrap()
 }
 
 #[test]
@@ -21,12 +19,9 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should have import and shortened call
-    assert!(output.contains("use tokio :: task :: spawn"));
-    assert!(output.contains("spawn (async"));
-    // Should NOT have fully qualified call anymore
-    assert!(!output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("use tokio::task::spawn;"));
+    assert!(output.contains("spawn(async"));
+    assert!(!output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -38,9 +33,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    assert!(output.contains("use std :: fs :: read_to_string"));
-    assert!(output.contains("use tokio :: task :: spawn"));
+    assert!(output.contains("use std::fs::read_to_string;"));
+    assert!(output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
@@ -52,12 +46,9 @@ fn main() {
 }
 "#;
     let output = process_source(input, &["std".to_string()], false);
-
-    // tokio should be rewritten
-    assert!(output.contains("use tokio :: task :: spawn"));
-    // std should remain fully qualified (not imported)
-    assert!(!output.contains("use std :: fs :: read_to_string"));
-    assert!(output.contains("std :: fs :: read_to_string"));
+    assert!(output.contains("use tokio::task::spawn;"));
+    assert!(!output.contains("use std::fs::read_to_string;"));
+    assert!(output.contains("std::fs::read_to_string"));
 }
 
 #[test]
@@ -72,17 +63,13 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // crate:: and self:: paths should be rewritten
-    assert!(output.contains("use crate :: inner :: helper"));
-    assert!(output.contains("use self :: inner :: helper"));
-    // Calls should use short name
-    assert!(output.contains("helper ()"));
+    assert!(output.contains("use crate::inner::helper;"));
+    assert!(output.contains("use self::inner::helper;"));
+    assert!(output.contains("helper()"));
 }
 
 #[test]
 fn test_skip_self_type() {
-    // Self:: refers to the type in impl blocks - should not be rewritten
     let input = r#"
 struct Foo;
 impl Foo {
@@ -97,8 +84,6 @@ impl Foo {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
-    // Should return false (no changes) since Self:: is skipped
     let changed = process_file(&path, &[], false, false).unwrap();
     assert!(!changed);
 }
@@ -114,10 +99,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with local function
-    assert!(output.contains("tokio :: task :: spawn (async"));
-    assert!(!output.contains("use tokio :: task :: spawn"));
+    assert!(output.contains("tokio::task::spawn(async"));
+    assert!(!output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
@@ -131,11 +114,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with existing import
-    assert!(output.contains("tokio :: task :: spawn (async"));
-    // Should NOT add duplicate/conflicting import
-    assert!(!output.contains("use tokio :: task :: spawn"));
+    assert!(output.contains("tokio::task::spawn(async"));
+    assert!(!output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
@@ -149,10 +129,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], true);
-
-    // Should rewrite with alias
-    assert!(output.contains("use tokio :: task :: spawn as tokio_task_spawn"));
-    assert!(output.contains("tokio_task_spawn (async"));
+    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn;"));
+    assert!(output.contains("tokio_task_spawn(async"));
 }
 
 #[test]
@@ -166,10 +144,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], true);
-
-    // Should rewrite with alias
-    assert!(output.contains("use tokio :: task :: spawn as tokio_task_spawn"));
-    assert!(output.contains("tokio_task_spawn (async"));
+    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn;"));
+    assert!(output.contains("tokio_task_spawn(async"));
 }
 
 #[test]
@@ -182,7 +158,6 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
     let changed = process_file(&path, &[], false, false).unwrap();
     assert!(!changed);
 }
@@ -197,11 +172,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should preserve existing import
-    assert!(output.contains("use std :: io :: Write"));
-    // Should add new import
-    assert!(output.contains("use tokio :: task :: spawn"));
+    assert!(output.contains("use std::io::Write;"));
+    assert!(output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
@@ -212,9 +184,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    assert!(output.contains("use a :: b :: c :: d :: e :: func"));
-    assert!(output.contains("func ()"));
+    assert!(output.contains("use a::b::c::d::e::func;"));
+    assert!(output.contains("func()"));
 }
 
 #[test]
@@ -227,13 +198,9 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should only add one import
-    let import_count = output.matches("use tokio :: task :: spawn").count();
+    let import_count = output.matches("use tokio::task::spawn;").count();
     assert_eq!(import_count, 1);
-
-    // All calls should be rewritten
-    let spawn_calls = output.matches("spawn (async").count();
+    let spawn_calls = output.matches("spawn(async").count();
     assert_eq!(spawn_calls, 3);
 }
 
@@ -246,9 +213,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with let binding
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -261,14 +226,11 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with struct name
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
 fn test_alias_numbering_on_multiple_conflicts() {
-    // When both spawn AND tokio_task_spawn are taken, should use tokio_task_spawn_1
     let input = r#"
 fn spawn() {}
 fn tokio_task_spawn() {}
@@ -278,10 +240,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], true);
-
-    // Should use numbered alias since both spawn and tokio_task_spawn are taken
-    assert!(output.contains("use tokio :: task :: spawn as tokio_task_spawn_1"));
-    assert!(output.contains("tokio_task_spawn_1 (async"));
+    assert!(output.contains("use tokio::task::spawn as tokio_task_spawn_1;"));
+    assert!(output.contains("tokio_task_spawn_1(async"));
 }
 
 #[test]
@@ -294,12 +254,9 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
     let changed = process_file(&path, &[], true, false).unwrap();
     assert!(changed);
-
-    // File should NOT be modified
-    let content = std::fs::read_to_string(&path).unwrap();
+    let content = read_to_string(&path).unwrap();
     assert_eq!(content, input);
 }
 
@@ -311,11 +268,9 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Both should be rewritten
-    assert!(output.contains("use std :: fs :: read_to_string"));
-    assert!(output.contains("use tokio :: task :: spawn"));
-    assert!(output.contains("spawn (read_to_string"));
+    assert!(output.contains("use std::fs::read_to_string;"));
+    assert!(output.contains("use tokio::task::spawn;"));
+    assert!(output.contains("spawn(read_to_string"));
 }
 
 #[test]
@@ -328,11 +283,8 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Method call should be unchanged
-    assert!(output.contains("s . push_str"));
-    // But FQ call should be rewritten
-    assert!(output.contains("use tokio :: task :: spawn"));
+    assert!(output.contains("s.push_str"));
+    assert!(output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
@@ -345,9 +297,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with enum name
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -360,9 +310,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with type alias
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -375,9 +323,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with const
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -390,9 +336,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should NOT rewrite due to conflict with static
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -405,9 +349,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
-
-    // Should detect conflict with renamed import
-    assert!(output.contains("tokio :: task :: spawn (async"));
+    assert!(output.contains("tokio::task::spawn(async"));
 }
 
 #[test]
@@ -422,15 +364,12 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
     let changed = process_file(&path, &[], false, false).unwrap();
-    // Should not change anything - single segment paths are not rewritten
     assert!(!changed);
 }
 
 #[test]
 fn test_skip_type_associated_functions() {
-    // Paths starting with uppercase are type associated functions - should not be rewritten
     let input = r#"
 fn main() {
     let v = Vec::new();
@@ -440,9 +379,20 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-
-    // Should return false (no changes) since Vec::new and String::from are type associated
-    // functions
     let changed = process_file(&path, &[], false, false).unwrap();
     assert!(!changed);
+}
+
+#[test]
+fn test_preserves_doc_comments() {
+    let input = r#"
+/// This is a doc comment
+fn main() {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[], false);
+    // Verify doc comments are preserved as /// not #[doc = "..."]
+    assert!(output.contains("/// This is a doc comment"));
+    assert!(!output.contains("#[doc = "));
 }

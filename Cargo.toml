@@ -7,8 +7,7 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
-syn = { version = "2", features = ["full", "visit-mut", "extra-traits"] }
-quote = "1"
+syn = { version = "2", features = ["full", "visit", "visit-mut"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
 [dev-dependencies]

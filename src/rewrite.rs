@@ -6,47 +6,52 @@ use std::{
 
 use anyhow::{Context, Result};
 use fs::{read_to_string, write};
-use proc_macro2::Span;
-use quote::quote;
 use syn::{
-    ExprCall, File, Ident, Item, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStatic,
-    ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Pat, Path as SynPath, UseTree, parse_file,
-    parse_quote,
+    ExprCall, File, Item, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStatic, ItemStruct,
+    ItemTrait, ItemType, ItemUnion, Pat, Path as SynPath, UseTree, parse_file,
+    spanned::Spanned,
+    visit::{self, Visit},
     visit_mut::{self, VisitMut},
-};
-use visit_mut::{visit_local_mut, visit_pat_ident_mut};
-#[doc = " Information about a fully-qualified function path we want to shorten."]
+};use visit_mut::visit_local_mut;
+use visit_mut::visit_pat_ident_mut;
+
+
+// Information about a fully-qualified function path we want to shorten.
 #[derive(Clone)]
 struct PathInfo {
-    full: SynPath,
-    last_ident: Ident,
+    last_ident: String,
     line: usize,
 }
-impl std::fmt::Debug for PathInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PathInfo")
-            .field("full", &path_to_string(&self.full))
-            .field("last_ident", &self.last_ident.to_string())
-            .field("line", &self.line)
-            .finish()
-    }
+
+// A single occurrence of a path in the source that needs rewriting.
+#[derive(Clone, Debug)]
+struct PathOccurrence {
+    full_path_str: String,
+    start_line: usize,
+    start_col: usize,
+    end_line: usize,
+    end_col: usize,
 }
-#[doc = " Collect all candidate fully-qualified paths from function calls."]
-#[derive(Default)]
-struct PathCollector {
+
+// Collect all candidate fully-qualified paths from function calls.
+struct PathCollector<'a> {
     paths: BTreeMap<String, PathInfo>,
-    ignore_roots: BTreeSet<String>,
+    occurrences: Vec<PathOccurrence>,
+    ignore_roots: &'a BTreeSet<String>,
 }
-impl PathCollector {
-    fn new(ignore_roots: &[String]) -> Self {
+
+impl<'a> PathCollector<'a> {
+    fn new(ignore_roots: &'a BTreeSet<String>) -> Self {
         Self {
             paths: BTreeMap::new(),
-            ignore_roots: ignore_roots.iter().cloned().collect(),
+            occurrences: Vec::new(),
+            ignore_roots,
         }
     }
 }
-impl VisitMut for PathCollector {
-    fn visit_expr_call_mut(&mut self, node: &mut ExprCall) {
+
+impl<'a> Visit<'_> for PathCollector<'a> {
+    fn visit_expr_call(&mut self, node: &ExprCall) {
         if let syn::Expr::Path(expr_path) = &*node.func
             && expr_path.qself.is_none()
         {
@@ -60,109 +65,86 @@ impl VisitMut for PathCollector {
                     && !first_char.is_uppercase()
                     && !self.ignore_roots.contains(&first_name)
                 {
-                    let last_segment = segments.last().unwrap().clone();
-                    let last_ident = last_segment.ident.clone();
-                    let line = first_ident.span().start().line;
+                    let last_segment = segments.last().unwrap();
+                    let last_ident = last_segment.ident.to_string();
                     let full_str = path_to_string(path);
-                    self.paths.entry(full_str.clone()).or_insert(PathInfo {
-                        full: path.clone(),
-                        last_ident,
-                        line,
+
+                    // Get span info for the entire path expression
+                    let span = expr_path.span();
+                    let start = span.start();
+                    let end = span.end();
+
+                    self.paths
+                        .entry(full_str.clone())
+                        .or_insert(PathInfo { last_ident: last_ident.clone(), line: start.line });
+
+                    self.occurrences.push(PathOccurrence {
+                        full_path_str: full_str,
+                        start_line: start.line,
+                        start_col: start.column,
+                        end_line: end.line,
+                        end_col: end.column,
                     });
                 }
             }
         }
-        visit_mut::visit_expr_call_mut(self, node);
+        visit::visit_expr_call(self, node);
     }
 }
-#[doc = " Rewrite fully-qualified paths in function calls to their last segment,"]
-#[doc = " but deal correctly with conflicts."]
-struct PathRewriter {
-    by_string: BTreeMap<String, PathInfo>,
+
+// Manages conflict detection and alias generation.
+struct ConflictResolver {
     imported_idents: BTreeSet<String>,
     local_idents: BTreeSet<String>,
-    file_path: String,
-    alias_on_conflict: bool,
-    aliases: BTreeMap<String, Ident>,
+    aliases: BTreeMap<String, String>,
 }
-impl PathRewriter {
-    fn new(
-        file_path: &Path,
-        paths: BTreeMap<String, PathInfo>,
-        imported_idents: BTreeSet<String>,
-        local_idents: BTreeSet<String>,
-        alias_on_conflict: bool,
-    ) -> Self {
+
+impl ConflictResolver {
+    fn new(imported_idents: BTreeSet<String>, local_idents: BTreeSet<String>) -> Self {
         Self {
-            by_string: paths,
             imported_idents,
             local_idents,
-            file_path: file_path.display().to_string(),
-            alias_on_conflict,
             aliases: BTreeMap::new(),
         }
     }
+
     fn has_conflict(&self, ident: &str) -> bool {
         self.imported_idents.contains(ident) || self.local_idents.contains(ident)
     }
-    #[doc = " Get or create an alias identifier for a conflicting full path."]
-    fn alias_for(&mut self, full: &SynPath) -> Ident {
-        let key = path_to_string(full);
-        if let Some(id) = self.aliases.get(&key) {
-            return id.clone();
+
+    fn is_used(&self, name: &str) -> bool {
+        self.imported_idents.contains(name)
+            || self.local_idents.contains(name)
+            || self.aliases.values().any(|v| v == name)
+    }
+
+    // Get or create an alias for a conflicting full path.
+    fn alias_for(&mut self, full_path_str: &str) -> String {
+        if let Some(alias) = self.aliases.get(full_path_str) {
+            return alias.clone();
         }
-        let base = full
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("_");
+        let base = full_path_str.replace("::", "_");
         let mut candidate = base.clone();
         let mut idx = 1;
-        while self.imported_idents.contains(&candidate) || self.local_idents.contains(&candidate) {
+        while self.is_used(&candidate) {
             candidate = format!("{base}_{idx}");
             idx += 1;
         }
-        let ident = Ident::new(&candidate, Span::call_site());
-        self.aliases.insert(key, ident.clone());
-        ident
+        self.aliases.insert(full_path_str.to_string(), candidate.clone());
+        candidate
     }
 }
-impl VisitMut for PathRewriter {
-    fn visit_expr_call_mut(&mut self, node: &mut ExprCall) {
-        if let syn::Expr::Path(expr_path) = &mut *node.func
-            && expr_path.qself.is_none()
-        {
-            let path = &expr_path.path;
-            if path.segments.len() >= 2 {
-                let key = path_to_string(path);
-                if let Some(info) = self.by_string.get(&key).cloned() {
-                    let last_name = info.last_ident.to_string();
-                    if self.has_conflict(&last_name) {
-                        if self.alias_on_conflict {
-                            let alias_ident = self.alias_for(&info.full);
-                            expr_path.path.segments.clear();
-                            expr_path.path.segments.push(alias_ident.into());
-                        } else {
-                            eprintln!(
-                                "conflict in {}:{}: identifier `{}` is already \
-                                 defined/imported; skipping rewrite of `{}`",
-                                self.file_path, info.line, last_name, key
-                            );
-                        }
-                    } else {
-                        let last_segment = path.segments.last().unwrap().clone();
-                        expr_path.path.segments.clear();
-                        expr_path.path.segments.push(last_segment);
-                    }
-                }
-            }
-        }
-        visit_mut::visit_expr_call_mut(self, node);
-    }
+
+// A text replacement to apply.
+#[derive(Debug)]
+struct Replacement {
+    start: usize,
+    end: usize,
+    new_text: String,
 }
-#[doc = " Process a single file."]
-#[doc = " Returns true if the file would be / was changed."]
+
+// Process a single file.
+// Returns true if the file would be / was changed.
 pub fn process_file(
     path: &Path,
     ignore_roots: &[String],
@@ -170,46 +152,107 @@ pub fn process_file(
     alias_on_conflict: bool,
 ) -> Result<bool> {
     let src = read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut ast: File =
+    let ast: File =
         parse_file(&src).with_context(|| format!("failed to parse {}", path.display()))?;
-    let mut collector = PathCollector::new(ignore_roots);
-    collector.visit_file_mut(&mut ast);
+
+    let ignore_set: BTreeSet<String> = ignore_roots.iter().cloned().collect();
+    let mut collector = PathCollector::new(&ignore_set);
+    collector.visit_file(&ast);
+
     if collector.paths.is_empty() {
         return Ok(false);
     }
+
     let imported_idents = collect_imported_idents(&ast);
     let local_idents = collect_local_idents(&ast);
-    let mut ast_for_rewrite = ast.clone();
-    let mut rewriter = PathRewriter::new(
-        path,
-        collector.paths.clone(),
-        imported_idents.clone(),
-        local_idents.clone(),
-        alias_on_conflict,
-    );
-    rewriter.visit_file_mut(&mut ast_for_rewrite);
-    let aliases = rewriter.aliases.clone();
-    let mut ast_final = ast_for_rewrite;
-    inject_uses(
-        &mut ast_final,
-        &collector.paths,
-        &imported_idents,
-        &local_idents,
-        path,
-        alias_on_conflict,
-        &aliases,
-    );
-    let new_src = quote ! (# ast_final).to_string();
+    let mut resolver = ConflictResolver::new(imported_idents.clone(), local_idents.clone());
+
+    let file_path_str = path.display().to_string();
+    let line_offsets = compute_line_offsets(&src);
+
+    // Build replacements for each occurrence
+    let mut replacements: Vec<Replacement> = Vec::new();
+    let mut use_statements: Vec<String> = Vec::new();
+    let mut added_imports: BTreeSet<String> = BTreeSet::new();
+
+    for (full_path_str, info) in &collector.paths {
+        let has_conflict = resolver.has_conflict(&info.last_ident);
+
+        if has_conflict && !alias_on_conflict {
+            eprintln!(
+                "conflict in {}:{}: identifier `{}` is already defined/imported; \
+                 skipping rewrite of `{}`",
+                file_path_str, info.line, info.last_ident, full_path_str
+            );
+            continue;
+        }
+
+        let replacement_text = if has_conflict {
+            let alias = resolver.alias_for(full_path_str);
+            if !added_imports.contains(full_path_str) {
+                use_statements.push(format!("use {} as {};", full_path_str, alias));
+                added_imports.insert(full_path_str.clone());
+            }
+            alias
+        } else {
+            if !added_imports.contains(full_path_str) {
+                use_statements.push(format!("use {};", full_path_str));
+                added_imports.insert(full_path_str.clone());
+            }
+            info.last_ident.clone()
+        };
+
+        // Find all occurrences of this path and create replacements
+        for occ in &collector.occurrences {
+            if occ.full_path_str == *full_path_str {
+                let start_byte = line_col_to_byte(&line_offsets, occ.start_line, occ.start_col);
+                let end_byte = line_col_to_byte(&line_offsets, occ.end_line, occ.end_col);
+
+                if let (Some(start), Some(end)) = (start_byte, end_byte) {
+                    replacements.push(Replacement {
+                        start,
+                        end,
+                        new_text: replacement_text.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    if replacements.is_empty() && use_statements.is_empty() {
+        return Ok(false);
+    }
+
+    // Sort replacements by start position descending (so we can apply from end to start)
+    replacements.sort_by(|a, b| b.start.cmp(&a.start));
+
+    // Apply replacements to source
+    let mut new_src = src.clone();
+    for repl in &replacements {
+        new_src.replace_range(repl.start..repl.end, &repl.new_text);
+    }
+
+    // Insert use statements
+    if !use_statements.is_empty() {
+        use_statements.sort();
+        let use_block = use_statements.join("\n") + "\n";
+        let insert_pos = find_use_insert_position(&ast, &line_offsets);
+        new_src.insert_str(insert_pos, &use_block);
+    }
+
     if new_src == src {
         return Ok(false);
     }
+
     if dry_run {
         println!("would modify: {}", path.display());
         return Ok(true);
     }
-    write(path, new_src).with_context(|| format!("failed to write {}", path.display()))?;
+
+    write(path, &new_src).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(true)
 }
+
 fn path_to_string(path: &SynPath) -> String {
     path.segments
         .iter()
@@ -217,7 +260,46 @@ fn path_to_string(path: &SynPath) -> String {
         .collect::<Vec<_>>()
         .join("::")
 }
-#[doc = " Collect the identifiers that are already imported into the file via `use`."]
+
+// Compute byte offsets for each line (1-indexed lines).
+fn compute_line_offsets(src: &str) -> Vec<usize> {
+    let mut offsets = vec![0]; // Line 1 starts at byte 0
+    for (i, ch) in src.char_indices() {
+        if ch == '\n' {
+            offsets.push(i + 1);
+        }
+    }
+    offsets
+}
+
+// Convert (line, column) to byte offset. Line is 1-indexed, column is 0-indexed.
+fn line_col_to_byte(line_offsets: &[usize], line: usize, col: usize) -> Option<usize> {
+    if line == 0 || line > line_offsets.len() {
+        return None;
+    }
+    Some(line_offsets[line - 1] + col)
+}
+
+// Find the byte position where use statements should be inserted.
+fn find_use_insert_position(ast: &File, line_offsets: &[usize]) -> usize {
+    let mut last_use_end: Option<usize> = None;
+
+    for item in &ast.items {
+        if let Item::Use(item_use) = item {
+            let span = item_use.span();
+            let end_line = span.end().line;
+            let end_col = span.end().column;
+            if let Some(byte_pos) = line_col_to_byte(line_offsets, end_line, end_col) {
+                last_use_end = Some(byte_pos);
+            }
+        }
+    }
+
+    // Return the position after the last use statement, or 0 if none exist
+    last_use_end.unwrap_or(0)
+}
+
+// Collect the identifiers that are already imported into the file via `use`.
 fn collect_imported_idents(ast: &File) -> BTreeSet<String> {
     let mut idents = BTreeSet::new();
     for item in &ast.items {
@@ -227,6 +309,7 @@ fn collect_imported_idents(ast: &File) -> BTreeSet<String> {
     }
     idents
 }
+
 fn collect_use_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
     match tree {
         UseTree::Name(n) => {
@@ -246,8 +329,8 @@ fn collect_use_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
         UseTree::Glob(_g) => {}
     }
 }
-#[doc = " Collect local identifiers in the file to detect potential conflicts."]
-#[doc = " This is conservative: we just gather all names we see in common binding positions."]
+
+// Collect local identifiers in the file to detect potential conflicts.
 fn collect_local_idents(ast: &File) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for item in &ast.items {
@@ -284,7 +367,7 @@ fn collect_local_idents(ast: &File) -> BTreeSet<String> {
     struct LocalBindingCollector<'a> {
         set: &'a mut BTreeSet<String>,
     }
-    impl<'a> VisitMut for LocalBindingCollector<'a> {
+    impl VisitMut for LocalBindingCollector<'_> {
         fn visit_local_mut(&mut self, node: &mut syn::Local) {
             collect_pattern_idents(&node.pat, self.set);
             visit_local_mut(self, node);
@@ -299,6 +382,7 @@ fn collect_local_idents(ast: &File) -> BTreeSet<String> {
     collector.visit_file_mut(&mut ast_clone);
     set
 }
+
 fn collect_pattern_idents(pat: &Pat, out: &mut BTreeSet<String>) {
     match pat {
         Pat::Ident(p) => {
@@ -334,54 +418,4 @@ fn collect_pattern_idents(pat: &Pat, out: &mut BTreeSet<String>) {
         }
         _ => {}
     }
-}
-#[doc = " Inject `use path::to::func;` for each shortened path:"]
-#[doc = " - If no conflict: `use foo::bar::baz;`"]
-#[doc = " - If conflict and alias_on_conflict: `use foo::bar::baz as foo_bar_baz;`"]
-#[doc = " - If conflict and !alias_on_conflict: skip + warn (call site kept FQ)."]
-fn inject_uses(
-    ast: &mut File,
-    paths: &BTreeMap<String, PathInfo>,
-    imported_idents: &BTreeSet<String>,
-    local_idents: &BTreeSet<String>,
-    file_path: &Path,
-    alias_on_conflict: bool,
-    aliases: &BTreeMap<String, Ident>,
-) {
-    let mut new_uses: Vec<Item> = Vec::new();
-    let file_path_str = file_path.display().to_string();
-    for (key, info) in paths {
-        let ident_name = info.last_ident.to_string();
-        let has_conflict =
-            imported_idents.contains(&ident_name) || local_idents.contains(&ident_name);
-        if has_conflict && !alias_on_conflict {
-            eprintln!(
-                "conflict in {}:{}: identifier `{}` is already defined/imported; \
-                 skipping import of `use {}`;",
-                file_path_str,
-                info.line,
-                ident_name,
-                path_to_string(&info.full)
-            );
-            continue;
-        }
-        let full_path = &info.full;
-        let use_item: ItemUse = if has_conflict && alias_on_conflict {
-            let alias_ident = aliases.get(key).expect("alias should exist for conflicting path");
-            parse_quote! { use # full_path as # alias_ident ; }
-        } else {
-            parse_quote! { use # full_path ; }
-        };
-        new_uses.push(Item::Use(use_item));
-    }
-    if new_uses.is_empty() {
-        return;
-    }
-    let mut insert_idx = 0usize;
-    for (idx, item) in ast.items.iter().enumerate() {
-        if let Item::Use(_) = item {
-            insert_idx = idx + 1;
-        }
-    }
-    ast.items.splice(insert_idx..insert_idx, new_uses);
 }
