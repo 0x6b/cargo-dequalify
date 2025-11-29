@@ -1,20 +1,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{read_to_string, write},
     path::Path,
 };
 
 use anyhow::{Context, Result};
-use fs::{read_to_string, write};
 use syn::{
     ExprCall, File, Item, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStatic, ItemStruct,
     ItemTrait, ItemType, ItemUnion, Pat, Path as SynPath, UseTree, parse_file,
     spanned::Spanned,
     visit::{self, Visit},
     visit_mut::{self, VisitMut},
-};use visit_mut::visit_local_mut;
-use visit_mut::visit_pat_ident_mut;
-
+};
+use visit_mut::{visit_local_mut, visit_pat_ident_mut};
 
 // Information about a fully-qualified function path we want to shorten.
 #[derive(Clone)]
@@ -168,7 +166,7 @@ pub fn process_file(
     let mut resolver = ConflictResolver::new(imported_idents.clone(), local_idents.clone());
 
     let file_path_str = path.display().to_string();
-    let line_offsets = compute_line_offsets(&src);
+    let line_offsets = LineOffsets::new(&src);
 
     // Build replacements for each occurrence
     let mut replacements: Vec<Replacement> = Vec::new();
@@ -205,8 +203,9 @@ pub fn process_file(
         // Find all occurrences of this path and create replacements
         for occ in &collector.occurrences {
             if occ.full_path_str == *full_path_str {
-                let start_byte = line_col_to_byte(&line_offsets, occ.start_line, occ.start_col);
-                let end_byte = line_col_to_byte(&line_offsets, occ.end_line, occ.end_col);
+                let start_byte =
+                    line_offsets.line_col_to_byte(occ.start_line, occ.start_col);
+                let end_byte = line_offsets.line_col_to_byte(occ.end_line, occ.end_col);
 
                 if let (Some(start), Some(end)) = (start_byte, end_byte) {
                     replacements.push(Replacement {
@@ -261,27 +260,51 @@ fn path_to_string(path: &SynPath) -> String {
         .join("::")
 }
 
-// Compute byte offsets for each line (1-indexed lines).
-fn compute_line_offsets(src: &str) -> Vec<usize> {
-    let mut offsets = vec![0]; // Line 1 starts at byte 0
-    for (i, ch) in src.char_indices() {
-        if ch == '\n' {
-            offsets.push(i + 1);
-        }
-    }
-    offsets
+// For each line, store (line_start_byte, Vec of char_index -> byte_offset_in_line).
+// This handles UTF-8 correctly since proc_macro2::Span uses character columns, not byte columns.
+struct LineOffsets {
+    lines: Vec<(usize, Vec<usize>)>, // (line_start_byte, char_to_byte_offset)
 }
 
-// Convert (line, column) to byte offset. Line is 1-indexed, column is 0-indexed.
-fn line_col_to_byte(line_offsets: &[usize], line: usize, col: usize) -> Option<usize> {
-    if line == 0 || line > line_offsets.len() {
-        return None;
+impl LineOffsets {
+    fn new(src: &str) -> Self {
+        let mut lines: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut current_char_offsets: Vec<usize> = Vec::new();
+        let mut line_start_byte = 0usize;
+
+        for (byte_idx, ch) in src.char_indices() {
+            if ch == '\n' {
+                lines.push((line_start_byte, current_char_offsets));
+                current_char_offsets = Vec::new();
+                line_start_byte = byte_idx + 1;
+            } else {
+                // Store byte offset relative to line start for this character
+                current_char_offsets.push(byte_idx - line_start_byte);
+            }
+        }
+        // Push the last line
+        lines.push((line_start_byte, current_char_offsets));
+
+        Self { lines }
     }
-    Some(line_offsets[line - 1] + col)
+
+    // Convert (line, col) to byte offset. Line is 1-indexed, col is 0-indexed character column.
+    fn line_col_to_byte(&self, line: usize, col: usize) -> Option<usize> {
+        if line == 0 || line > self.lines.len() {
+            return None;
+        }
+        let (line_start, char_offsets) = &self.lines[line - 1];
+        if col >= char_offsets.len() {
+            // Column is at or past end of line - return end of line
+            // This can happen for end positions
+            return Some(line_start + char_offsets.last().map(|&o| o + 1).unwrap_or(0));
+        }
+        Some(line_start + char_offsets[col])
+    }
 }
 
 // Find the byte position where use statements should be inserted.
-fn find_use_insert_position(ast: &File, line_offsets: &[usize]) -> usize {
+fn find_use_insert_position(ast: &File, line_offsets: &LineOffsets) -> usize {
     let mut last_use_end: Option<usize> = None;
 
     for item in &ast.items {
@@ -289,7 +312,7 @@ fn find_use_insert_position(ast: &File, line_offsets: &[usize]) -> usize {
             let span = item_use.span();
             let end_line = span.end().line;
             let end_col = span.end().column;
-            if let Some(byte_pos) = line_col_to_byte(line_offsets, end_line, end_col) {
+            if let Some(byte_pos) = line_offsets.line_col_to_byte(end_line, end_col) {
                 last_use_end = Some(byte_pos);
             }
         }

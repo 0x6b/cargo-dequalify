@@ -396,3 +396,32 @@ fn main() {
     assert!(output.contains("/// This is a doc comment"));
     assert!(!output.contains("#[doc = "));
 }
+
+#[test]
+fn test_unicode_before_path() {
+    // Test that Unicode characters before the path don't break byte offset calculation
+    let input = r#"
+fn main() {
+    let 日本語 = "hello";
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[], false);
+    assert!(output.contains("use tokio::task::spawn;"));
+    assert!(output.contains("spawn(async"));
+    assert!(output.contains("let 日本語 = \"hello\";")); // Unicode preserved
+}
+
+#[test]
+fn test_unicode_in_string_before_path() {
+    let input = r#"
+fn main() {
+    let s = "日本語テスト";
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[], false);
+    assert!(output.contains("use tokio::task::spawn;"));
+    assert!(output.contains("spawn(async"));
+    assert!(output.contains("\"日本語テスト\"")); // Unicode string preserved
+}
