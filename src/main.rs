@@ -49,27 +49,33 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let mut any_changes = false;
+
     if cli.target.is_file() {
-        process_path(&cli.target, &cli)?;
+        any_changes |= process_path(&cli.target, &cli)?;
     } else {
         for entry in WalkDir::new(&cli.target)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
         {
-            process_path(entry.path(), &cli)?;
+            any_changes |= process_path(entry.path(), &cli)?;
         }
+    }
+
+    if any_changes && !cli.write {
+        eprintln!("---\nRun with -w to apply changes.");
     }
 
     Ok(())
 }
 
-fn process_path(path: &Path, cli: &Cli) -> Result<()> {
+fn process_path(path: &Path, cli: &Cli) -> Result<bool> {
     let changed = process_file(path, &cli.ignore_roots, !cli.write, cli.alias_on_conflict)?;
 
     if changed && cli.verbose {
         println!("modified: {}", path.display());
     }
 
-    Ok(())
+    Ok(changed)
 }
