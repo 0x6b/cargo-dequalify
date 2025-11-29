@@ -31,30 +31,25 @@ cargo install --git https://github.com/0x6b/dequalify
 
 ## Usage
 
-```sh
-# Preview changes in current directory (default: dry-run mode)
-dequalify
+```console
+$ dequalify --help
+Rewrite fully-qualified function calls into imported short names
 
-# Process a specific file or directory
-dequalify src/main.rs
-dequalify src/
+Usage: dequalify [OPTIONS] [TARGET]
 
-# Actually modify files
-dequalify -w
-dequalify --write src/
+Arguments:
+  [TARGET]  File or directory to process (recursively for directories) [default: .]
 
-# Verbose output
-dequalify --verbose
-
-# Ignore specific root modules (e.g., std, core)
-dequalify --ignore-roots std,core
-
-# Use aliases when names conflict
-dequalify --alias-on-conflict
-
-# Run cargo fmt after applying changes
-dequalify -w --fmt
-dequalify -w --fmt=nightly
+Options:
+  -w, --write                        Actually modify files (default: dry-run mode)
+      --ignore-roots <IGNORE_ROOTS>  Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc")
+      --alias-on-conflict            When a short name would conflict, import with an alias and rewrite calls.
+                                     Example: tokio::task::spawn(foo()) => use tokio::task::spawn as
+                                     tokio_task_spawn; tokio_task_spawn(foo());
+      --fmt [<TOOLCHAIN>]            Run cargo fmt after writing changes. Optionally specify a toolchain (e.g.,
+                                     --fmt=nightly)
+  -h, --help                         Print help
+  -V, --version                      Print version
 ```
 
 ## Conflict Handling

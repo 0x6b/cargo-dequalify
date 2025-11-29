@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
 similar = "2"
 walkdir = "2"
 syn = { version = "2", features = ["full", "visit", "visit-mut"] }

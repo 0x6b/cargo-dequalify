@@ -31,10 +31,6 @@ struct Cli {
     #[arg(short, long)]
     write: bool,
 
-    /// Print which files were modified
-    #[arg(long)]
-    verbose: bool,
-
     /// Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc")
     #[arg(long, value_delimiter = ',')]
     ignore_roots: Vec<String>,
@@ -99,10 +95,5 @@ fn run_cargo_fmt(toolchain: Option<&str>) -> Result<()> {
 
 fn process_path(path: &Path, cli: &Cli) -> Result<bool> {
     let changed = process_file(path, &cli.ignore_roots, !cli.write, cli.alias_on_conflict)?;
-
-    if changed && cli.verbose {
-        println!("modified: {}", path.display());
-    }
-
     Ok(changed)
 }
