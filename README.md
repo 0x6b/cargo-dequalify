@@ -51,6 +51,10 @@ dequalify --ignore-roots std,core
 
 # Use aliases when names conflict
 dequalify --alias-on-conflict
+
+# Run cargo fmt after applying changes
+dequalify -w --fmt
+dequalify -w --fmt=nightly
 ```
 
 ## Conflict Handling

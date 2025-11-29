@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use dequalify::process_file;
 use walkdir::WalkDir;
@@ -44,6 +47,10 @@ struct Cli {
     ///   tokio_task_spawn(foo());
     #[arg(long)]
     alias_on_conflict: bool,
+
+    /// Run cargo fmt after writing changes. Optionally specify a toolchain (e.g., --fmt=nightly)
+    #[arg(long, value_name = "TOOLCHAIN")]
+    fmt: Option<Option<String>>,
 }
 
 fn main() -> Result<()> {
@@ -64,9 +71,29 @@ fn main() -> Result<()> {
     }
 
     if any_changes && !cli.write {
-        eprintln!("# Run with -w to apply changes.");
+        eprintln!("# Run with -w to apply changes, or -w --fmt to also format.");
     }
 
+    if any_changes && cli.write {
+        if let Some(toolchain) = &cli.fmt {
+            run_cargo_fmt(toolchain.as_deref())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_cargo_fmt(toolchain: Option<&str>) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    if let Some(tc) = toolchain {
+        cmd.arg(format!("+{}", tc));
+    }
+    cmd.arg("fmt");
+
+    let status = cmd.status().context("failed to run cargo fmt")?;
+    if !status.success() {
+        anyhow::bail!("cargo fmt failed with {}", status);
+    }
     Ok(())
 }
 
