@@ -169,10 +169,15 @@ pub fn process_file(
     let file_path_str = path.display().to_string();
     let line_offsets = LineOffsets::new(&src);
 
+    // Group occurrences by path for efficient lookup
+    let mut occ_by_path: BTreeMap<&str, Vec<&PathOccurrence>> = BTreeMap::new();
+    for occ in &collector.occurrences {
+        occ_by_path.entry(&occ.full_path_str).or_default().push(occ);
+    }
+
     // Build replacements for each occurrence
     let mut replacements: Vec<Replacement> = Vec::new();
     let mut use_statements: Vec<String> = Vec::new();
-    let mut added_imports: BTreeSet<String> = BTreeSet::new();
 
     for (full_path_str, info) in &collector.paths {
         let has_conflict = resolver.has_conflict(&info.last_ident);
@@ -188,24 +193,17 @@ pub fn process_file(
 
         let replacement_text = if has_conflict {
             let alias = resolver.alias_for(full_path_str);
-            if !added_imports.contains(full_path_str) {
-                use_statements.push(format!("use {} as {};", full_path_str, alias));
-                added_imports.insert(full_path_str.clone());
-            }
+            use_statements.push(format!("use {} as {};", full_path_str, alias));
             alias
         } else {
-            if !added_imports.contains(full_path_str) {
-                use_statements.push(format!("use {};", full_path_str));
-                added_imports.insert(full_path_str.clone());
-            }
+            use_statements.push(format!("use {};", full_path_str));
             info.last_ident.clone()
         };
 
-        // Find all occurrences of this path and create replacements
-        for occ in &collector.occurrences {
-            if occ.full_path_str == *full_path_str {
-                let start_byte =
-                    line_offsets.line_col_to_byte(occ.start_line, occ.start_col);
+        // Create replacements for all occurrences of this path
+        if let Some(occurrences) = occ_by_path.get(full_path_str.as_str()) {
+            for occ in occurrences {
+                let start_byte = line_offsets.line_col_to_byte(occ.start_line, occ.start_col);
                 let end_byte = line_offsets.line_col_to_byte(occ.end_line, occ.end_col);
 
                 if let (Some(start), Some(end)) = (start_byte, end_byte) {
