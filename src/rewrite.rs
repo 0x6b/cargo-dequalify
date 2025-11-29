@@ -208,6 +208,9 @@ pub fn process_file(
             alias
         } else {
             use_statements.push(format!("use {};", full_path_str));
+            // Mark this ident as used so subsequent paths with the same short name
+            // will be detected as conflicts
+            resolver.imported_idents.insert(info.last_ident.clone());
             info.last_ident.clone()
         };
 

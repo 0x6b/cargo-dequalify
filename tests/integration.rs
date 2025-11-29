@@ -53,6 +53,7 @@ fn main() {
 
 #[test]
 fn test_rewrite_crate_self_super() {
+    // crate:: and self:: paths should be rewritten, but only one can use the short name
     let input = r#"
 mod inner {
     pub fn helper() {}
@@ -63,8 +64,11 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[], false);
+    // First one gets imported
     assert!(output.contains("use crate::inner::helper;"));
-    assert!(output.contains("use self::inner::helper;"));
+    // Second one conflicts with the first, so it stays fully qualified
+    assert!(output.contains("self::inner::helper()"));
+    // First call is rewritten to short name
     assert!(output.contains("helper()"));
 }
 
@@ -440,4 +444,44 @@ fn main() {
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(output.contains("spawn(async"));
     assert!(output.contains("\"日本語テスト\"")); // Unicode string preserved
+}
+
+#[test]
+fn test_conflict_between_new_imports() {
+    // Multiple paths with the same short name should conflict with each other
+    let input = r#"
+fn main() {
+    module_a::handle();
+    module_b::handle();
+    module_c::handle();
+}
+"#;
+    let output = process_source(input, &[], false);
+    // Only the first one should be imported without alias
+    assert!(output.contains("use module_a::handle;"));
+    // The rest should remain fully qualified (conflict detected)
+    assert!(output.contains("module_b::handle()"));
+    assert!(output.contains("module_c::handle()"));
+}
+
+#[test]
+fn test_conflict_between_new_imports_with_alias() {
+    // With alias_on_conflict, all should get unique aliases
+    let input = r#"
+fn main() {
+    module_a::handle();
+    module_b::handle();
+    module_c::handle();
+}
+"#;
+    let output = process_source(input, &[], true);
+    // First one gets the short name
+    assert!(output.contains("use module_a::handle;"));
+    // Others get aliases
+    assert!(output.contains("use module_b::handle as module_b_handle;"));
+    assert!(output.contains("use module_c::handle as module_c_handle;"));
+    // Calls are rewritten
+    assert!(output.contains("handle()"));
+    assert!(output.contains("module_b_handle()"));
+    assert!(output.contains("module_c_handle()"));
 }
