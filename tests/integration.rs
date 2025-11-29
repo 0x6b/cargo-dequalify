@@ -546,3 +546,21 @@ fn main() {
     // (the broken pattern would be "// For documentat\nuse tokio::task::spawn;")
     assert!(!output.contains("// For documentat\n"));
 }
+
+#[test]
+fn test_preserves_trailing_comment_with_unicode() {
+    // Ensure multi-byte UTF-8 characters in trailing comments don't break byte offset calculation
+    let input = r#"
+use crate::Foo; // 日本語コメント
+
+fn main() {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    // The trailing comment with Unicode should remain intact
+    assert!(output.contains("use crate::Foo; // 日本語コメント"));
+    assert!(output.contains("use tokio::task::spawn;"));
+    // New imports should be on their own line, not breaking the comment
+    assert!(!output.contains("日本語コメン\n"));
+}

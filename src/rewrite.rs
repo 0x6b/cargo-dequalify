@@ -328,21 +328,38 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         return Ok(false);
     }
 
-    // Sort replacements by start position descending (so we can apply from end to start)
-    replacements.sort_by(|a, b| b.start.cmp(&a.start));
-
-    // Apply replacements to source
     let mut new_src = src.clone();
-    for repl in &replacements {
-        new_src.replace_range(repl.start..repl.end, &repl.new_text);
-    }
 
-    // Insert use statements
-    if !use_statements.is_empty() {
+    // Insert use statements FIRST, before applying replacements.
+    // This is important because insert_pos is calculated from the original source,
+    // and replacements would shift byte positions.
+    let use_block_len = if !use_statements.is_empty() {
         use_statements.sort();
         let use_block = "\n".to_string() + &use_statements.join("\n") + "\n";
         let insert_pos = find_use_insert_position(&ast, &line_offsets);
         new_src.insert_str(insert_pos, &use_block);
+        (insert_pos, use_block.len())
+    } else {
+        (0, 0)
+    };
+
+    // Sort replacements by start position descending (so we can apply from end to start)
+    replacements.sort_by(|a, b| b.start.cmp(&a.start));
+
+    // Apply replacements to source, adjusting offsets for the inserted use block
+    let (use_insert_pos, use_len) = use_block_len;
+    for repl in &replacements {
+        let adjusted_start = if repl.start >= use_insert_pos {
+            repl.start + use_len
+        } else {
+            repl.start
+        };
+        let adjusted_end = if repl.end >= use_insert_pos {
+            repl.end + use_len
+        } else {
+            repl.end
+        };
+        new_src.replace_range(adjusted_start..adjusted_end, &repl.new_text);
     }
 
     if new_src == src {
@@ -408,15 +425,22 @@ impl LineOffsets {
         Some(line_start + char_offsets[col])
     }
 
-    // Get the byte offset at the end of a line (after the last character, before newline).
+    // Get the byte offset at the end of a line (position of newline or end of file).
     // Line is 1-indexed.
     fn line_end_byte(&self, line: usize) -> usize {
         if line == 0 || line > self.lines.len() {
             return 0;
         }
-        let (line_start, char_offsets) = &self.lines[line - 1];
-        // Return position after last character (which is where the newline would be)
-        line_start + char_offsets.last().map(|&o| o + 1).unwrap_or(0)
+        if line < self.lines.len() {
+            // The newline is at (start of next line - 1)
+            self.lines[line].0 - 1
+        } else {
+            // Last line - no newline, use end of file
+            // We don't have total length here, so fall back to line_col_to_byte approach
+            // For last line, there's no trailing newline to worry about
+            let (line_start, char_offsets) = &self.lines[line - 1];
+            line_start + char_offsets.last().map(|&o| o + 1).unwrap_or(0)
+        }
     }
 }
 
