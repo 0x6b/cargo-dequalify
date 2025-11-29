@@ -23,16 +23,13 @@ use toml::from_str;
 ///
 /// Examples:
 ///   cargo dequalify
-///   cargo dequalify --alias-on-conflict
+///   cargo dequalify -w
 ///
 /// By default:
 ///   - Runs on the current workspace (or single crate)
-///   - Rewrites only when there is no name conflict
-///   - If the short name already exists (import/local), it skips and prints a warning
-///
-/// With --alias-on-conflict:
-///   - On conflict, generates an alias: use tokio::task::spawn as tokio_task_spawn;
-///     tokio_task_spawn(foo());
+///   - Uses dry-run mode (use -w to write changes)
+///   - On conflict, imports the parent module instead
+///     (e.g., tokio::task::spawn → use tokio::task; task::spawn())
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -47,15 +44,6 @@ struct Cli {
     /// Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc").
     #[arg(long, value_delimiter = ',')]
     ignore_roots: Vec<String>,
-
-    /// When a short name would conflict, import the parent module instead.
-    /// Example:
-    ///   tokio::task::spawn(foo())
-    ///   =>
-    ///   use tokio::task;
-    ///   task::spawn(foo());
-    #[arg(long)]
-    alias_on_conflict: bool,
 
     /// Run cargo fmt after writing changes. Optionally specify a toolchain (e.g., --fmt=nightly).
     #[arg(short, long, value_name = "TOOLCHAIN")]
@@ -259,7 +247,7 @@ fn process_crate(crate_root: &Path, cli: &Cli) -> Result<bool> {
             continue;
         }
 
-        any_changes |= process_file(path, &cli.ignore_roots, !cli.write, cli.alias_on_conflict)?;
+        any_changes |= process_file(path, &cli.ignore_roots, !cli.write)?;
     }
 
     Ok(any_changes)

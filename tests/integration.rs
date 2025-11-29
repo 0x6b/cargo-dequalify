@@ -3,11 +3,11 @@ use std::{fs::read_to_string, io::Write};
 use cargo_dequalify::process_file;
 use tempfile::NamedTempFile;
 
-fn process_source(src: &str, ignore_roots: &[String], alias_on_conflict: bool) -> String {
+fn process_source(src: &str, ignore_roots: &[String]) -> String {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(src.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    process_file(&path, ignore_roots, false, alias_on_conflict).unwrap();
+    process_file(&path, ignore_roots, false).unwrap();
     read_to_string(&path).unwrap()
 }
 
@@ -18,7 +18,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(output.contains("spawn(async"));
     assert!(!output.contains("tokio::task::spawn(async"));
@@ -32,7 +32,7 @@ fn main() {
     std::fs::read_to_string("foo");
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use std::fs::read_to_string;"));
     assert!(output.contains("use tokio::task::spawn;"));
 }
@@ -45,7 +45,7 @@ fn main() {
     std::fs::read_to_string("foo");
 }
 "#;
-    let output = process_source(input, &["std".to_string()], false);
+    let output = process_source(input, &["std".to_string()]);
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(!output.contains("use std::fs::read_to_string;"));
     assert!(output.contains("std::fs::read_to_string"));
@@ -64,7 +64,7 @@ fn main() {
     self::inner::helper();
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     // Both conflict at all levels (helper, inner), can't be resolved
     // They remain unchanged
     assert!(output.contains("crate::inner::helper()"));
@@ -87,12 +87,13 @@ impl Foo {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false, false).unwrap();
+    let changed = process_file(&path, &[], false).unwrap();
     assert!(!changed);
 }
 
 #[test]
 fn test_conflict_with_local_function() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 fn spawn() {}
 
@@ -101,13 +102,14 @@ fn main() {
     spawn();
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
-    assert!(!output.contains("use tokio::task::spawn;"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_conflict_with_existing_import() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 use other::spawn;
 
@@ -116,9 +118,9 @@ fn main() {
     spawn();
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
-    assert!(!output.contains("use tokio::task::spawn;"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
@@ -132,7 +134,7 @@ fn main() {
     spawn();
 }
 "#;
-    let output = process_source(input, &[], true);
+    let output = process_source(input, &[]);
     // Import parent module instead of aliasing
     assert!(output.contains("use tokio::task;"));
     assert!(output.contains("task::spawn(async"));
@@ -149,7 +151,7 @@ fn main() {
     spawn();
 }
 "#;
-    let output = process_source(input, &[], true);
+    let output = process_source(input, &[]);
     // Import parent module instead of aliasing
     assert!(output.contains("use tokio::task;"));
     assert!(output.contains("task::spawn(async"));
@@ -165,7 +167,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false, false).unwrap();
+    let changed = process_file(&path, &[], false).unwrap();
     assert!(!changed);
 }
 
@@ -178,7 +180,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use std::io::Write;"));
     assert!(output.contains("use tokio::task::spawn;"));
 }
@@ -190,7 +192,7 @@ fn main() {
     a::b::c::d::e::func();
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use a::b::c::d::e::func;"));
     assert!(output.contains("func()"));
 }
@@ -204,7 +206,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     let import_count = output.matches("use tokio::task::spawn;").count();
     assert_eq!(import_count, 1);
     let spawn_calls = output.matches("spawn(async").count();
@@ -213,18 +215,21 @@ fn main() {
 
 #[test]
 fn test_conflict_with_let_binding() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 fn main() {
     let spawn = 42;
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_conflict_with_struct() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 struct spawn;
 
@@ -232,8 +237,9 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
@@ -249,7 +255,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], true);
+    let output = process_source(input, &[]);
     // spawn conflicts, task conflicts, tokio would be same-as-original
     // Can't be resolved, stays unchanged
     assert!(output.contains("tokio::task::spawn(async"));
@@ -266,7 +272,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], true, false).unwrap();
+    let changed = process_file(&path, &[], true).unwrap();
     assert!(changed);
     let content = read_to_string(&path).unwrap();
     assert_eq!(content, input);
@@ -279,7 +285,7 @@ fn main() {
     tokio::task::spawn(std::fs::read_to_string("foo"));
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use std::fs::read_to_string;"));
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(output.contains("spawn(read_to_string"));
@@ -294,13 +300,14 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("s.push_str"));
     assert!(output.contains("use tokio::task::spawn;"));
 }
 
 #[test]
 fn test_conflict_with_enum() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 enum spawn { A, B }
 
@@ -308,12 +315,14 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_conflict_with_type_alias() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 type spawn = i32;
 
@@ -321,12 +330,14 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_conflict_with_const() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 const spawn: i32 = 42;
 
@@ -334,12 +345,14 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_conflict_with_static() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 static spawn: i32 = 42;
 
@@ -347,12 +360,14 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
 fn test_use_rename_conflict() {
+    // With parent module import as default, spawn conflict causes use of task::spawn
     let input = r#"
 use other::foo as spawn;
 
@@ -360,8 +375,9 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
-    assert!(output.contains("tokio::task::spawn(async"));
+    let output = process_source(input, &[]);
+    assert!(output.contains("use tokio::task;"));
+    assert!(output.contains("task::spawn(async"));
 }
 
 #[test]
@@ -376,7 +392,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false, false).unwrap();
+    let changed = process_file(&path, &[], false).unwrap();
     assert!(!changed);
 }
 
@@ -391,7 +407,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false, false).unwrap();
+    let changed = process_file(&path, &[], false).unwrap();
     assert!(!changed);
 }
 
@@ -407,7 +423,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false, false).unwrap();
+    let changed = process_file(&path, &[], false).unwrap();
     assert!(!changed);
 }
 
@@ -419,7 +435,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     // Verify doc comments are preserved as /// not #[doc = "..."]
     assert!(output.contains("/// This is a doc comment"));
     assert!(!output.contains("#[doc = "));
@@ -434,7 +450,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(output.contains("spawn(async"));
     assert!(output.contains("let 日本語 = \"hello\";")); // Unicode preserved
@@ -448,7 +464,7 @@ fn main() {
     tokio::task::spawn(async {});
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     assert!(output.contains("use tokio::task::spawn;"));
     assert!(output.contains("spawn(async"));
     assert!(output.contains("\"日本語テスト\"")); // Unicode string preserved
@@ -465,7 +481,7 @@ fn main() {
     module_c::handle();
 }
 "#;
-    let output = process_source(input, &[], false);
+    let output = process_source(input, &[]);
     // All three conflict on 'handle', can't go up further without being same-as-original
     // All remain unchanged
     assert!(output.contains("module_a::handle()"));
@@ -483,7 +499,7 @@ fn main() {
     module_c::sub::handle();
 }
 "#;
-    let output = process_source(input, &[], true);
+    let output = process_source(input, &[]);
     // All three conflict on 'handle', all three conflict on 'sub'
     // Going to level 1 would be same-as-original, so can't be resolved
     assert!(output.contains("module_a::sub::handle()"));
@@ -501,7 +517,7 @@ fn main() {
     module_c::baz::handle();
 }
 "#;
-    let output = process_source(input, &[], true);
+    let output = process_source(input, &[]);
     // All three conflict on 'handle', so all go up to parent level
     // foo, bar, baz are all different, so no conflict
     assert!(output.contains("use module_a::foo;"));

@@ -43,8 +43,6 @@ Arguments:
 Options:
   -w, --write                        Actually modify files (default: dry-run mode)
       --ignore-roots <IGNORE_ROOTS>  Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc")
-      --alias-on-conflict            When a short name would conflict, import the parent module instead.
-                                     Example: tokio::task::spawn(foo()) => use tokio::task; task::spawn(foo());
   -f, --fmt [<TOOLCHAIN>]            Run cargo fmt after writing changes. Optionally specify a toolchain (e.g.,
                                      --fmt=nightly)
   -h, --help                         Print help
@@ -53,9 +51,7 @@ Options:
 
 ## Conflict Handling
 
-By default, if the short name would conflict with an existing import or local definition, the path is left unchanged and a warning is printed.
-
-With `--alias-on-conflict`, conflicting paths import the parent module instead:
+When the short name would conflict with an existing import or local definition, the tool imports the parent module instead:
 
 ```rust
 fn spawn() {}
@@ -77,29 +73,7 @@ fn main() {
 }
 ```
 
-If the parent module name also conflicts, it goes up another level:
-
-```rust
-fn spawn() {}
-fn task() {}
-
-fn main() {
-    tokio::task::spawn(async {});
-}
-```
-
-Becomes:
-
-```rust
-use tokio;
-
-fn spawn() {}
-fn task() {}
-
-fn main() {
-    tokio::task::spawn(async {});
-}
-```
+If the parent module name also conflicts, it goes up another level. If no valid import level exists (would result in same-as-original), the path is left unchanged.
 
 ## Limitations
 

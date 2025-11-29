@@ -22,7 +22,6 @@ use visit_mut::{visit_local_mut, visit_pat_ident_mut};
 // Information about a fully-qualified function path we want to shorten.
 #[derive(Clone)]
 struct PathInfo {
-    last_ident: String,
     line: usize,
 }
 
@@ -75,8 +74,6 @@ impl<'a> Visit<'_> for PathCollector<'a> {
                     && !second_to_last_char.is_uppercase()
                     && !self.ignore_roots.contains(&first_name)
                 {
-                    let last_segment = segments.last().unwrap();
-                    let last_ident = last_segment.ident.to_string();
                     let full_str = path_to_string(path);
 
                     // Get span info for the entire path expression
@@ -86,7 +83,7 @@ impl<'a> Visit<'_> for PathCollector<'a> {
 
                     self.paths
                         .entry(full_str.clone())
-                        .or_insert(PathInfo { last_ident: last_ident.clone(), line: start.line });
+                        .or_insert(PathInfo { line: start.line });
 
                     self.occurrences.push(PathOccurrence {
                         full_path_str: full_str,
@@ -170,13 +167,9 @@ impl ImportStrategy {
 
 /// Multi-pass conflict resolution.
 /// Groups paths by their import identifier and bumps conflicting groups up one level.
-///
-/// If `resolve_conflicts` is false, paths that conflict with existing_idents are excluded
-/// from the result (they should be skipped entirely).
 fn resolve_all_imports(
     paths: &[String],
     existing_idents: &BTreeSet<String>,
-    resolve_conflicts: bool,
 ) -> BTreeMap<String, ImportStrategy> {
     let mut strategies: Vec<ImportStrategy> = paths.iter().map(|p| ImportStrategy::new(p)).collect();
 
@@ -196,7 +189,7 @@ fn resolve_all_imports(
 
         // Find groups with internal conflicts (size > 1)
         let mut has_conflict = false;
-        for (_ident, indices) in &groups {
+        for indices in groups.values() {
             if indices.len() > 1 {
                 // Bump all members of this group up one level
                 for &idx in indices {
@@ -212,23 +205,19 @@ fn resolve_all_imports(
         }
     }
 
-    // Phase 2: Handle conflicts with existing idents
-    if resolve_conflicts {
-        // Try to resolve by going up levels
-        loop {
-            let mut has_conflict = false;
-            for strategy in &mut strategies {
-                if !strategy.is_same_as_original()
-                    && existing_idents.contains(strategy.import_ident())
-                {
-                    if strategy.go_up() {
-                        has_conflict = true;
-                    }
-                }
+    // Phase 2: Handle conflicts with existing idents by going up levels
+    loop {
+        let mut has_conflict = false;
+        for strategy in &mut strategies {
+            if !strategy.is_same_as_original()
+                && existing_idents.contains(strategy.import_ident())
+                && strategy.go_up()
+            {
+                has_conflict = true;
             }
-            if !has_conflict {
-                break;
-            }
+        }
+        if !has_conflict {
+            break;
         }
     }
 
@@ -243,11 +232,6 @@ fn resolve_all_imports(
         }
 
         let import_ident = strategy.import_ident().to_string();
-
-        // Skip if conflicts with existing idents and we're not resolving conflicts
-        if !resolve_conflicts && existing_idents.contains(&import_ident) {
-            continue;
-        }
 
         // Skip if this ident is already used by another path
         if used_idents.contains(&import_ident) {
@@ -271,12 +255,7 @@ struct Replacement {
 
 // Process a single file.
 // Returns true if the file would be / was changed.
-pub fn process_file(
-    path: &Path,
-    ignore_roots: &[String],
-    dry_run: bool,
-    alias_on_conflict: bool,
-) -> Result<bool> {
+pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Result<bool> {
     let src = read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let ast: File =
         parse_file(&src).with_context(|| format!("failed to parse {}", path.display()))?;
@@ -309,7 +288,7 @@ pub fn process_file(
     let all_paths: Vec<String> = collector.paths.keys().cloned().collect();
 
     // Resolve all imports using multi-pass algorithm
-    let strategies = resolve_all_imports(&all_paths, &existing_idents, alias_on_conflict);
+    let strategies = resolve_all_imports(&all_paths, &existing_idents);
 
     // Build replacements for each occurrence
     let mut replacements: Vec<Replacement> = Vec::new();
@@ -317,19 +296,11 @@ pub fn process_file(
 
     for (full_path_str, info) in &collector.paths {
         let Some(strategy) = strategies.get(full_path_str) else {
-            // Path couldn't be resolved (all levels conflict with existing idents)
-            if !alias_on_conflict {
-                eprintln!(
-                    "conflict in {}:{}: identifier `{}` is already defined/imported; \
-                     skipping rewrite of `{}`",
-                    file_path_str, info.line, info.last_ident, full_path_str
-                );
-            } else {
-                eprintln!(
-                    "conflict in {}:{}: cannot resolve `{}` without conflicts at any level",
-                    file_path_str, info.line, full_path_str
-                );
-            }
+            // Path couldn't be resolved (all levels conflict)
+            eprintln!(
+                "conflict in {}:{}: cannot resolve `{}` without conflicts at any level",
+                file_path_str, info.line, full_path_str
+            );
             continue;
         };
 
