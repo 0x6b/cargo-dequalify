@@ -65,8 +65,15 @@ impl<'a> Visit<'_> for PathCollector<'a> {
                 let first_ident = &segments[0].ident;
                 let first_name = first_ident.to_string();
                 let first_char = first_name.chars().next().unwrap_or('a');
+
+                // Check if second-to-last segment is uppercase (type associated function)
+                // e.g., pdf2svg::Cli::try_new() - Cli is the type
+                let second_to_last = &segments[segments.len() - 2].ident.to_string();
+                let second_to_last_char = second_to_last.chars().next().unwrap_or('a');
+
                 if first_name != "Self"
                     && !first_char.is_uppercase()
+                    && !second_to_last_char.is_uppercase()
                     && !self.ignore_roots.contains(&first_name)
                 {
                     let last_segment = segments.last().unwrap();

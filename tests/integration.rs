@@ -384,6 +384,22 @@ fn main() {
 }
 
 #[test]
+fn test_skip_nested_type_associated_functions() {
+    // pdf2svg::Cli::try_new() - Cli is a type, should not be rewritten
+    let input = r#"
+fn main() {
+    mycrate::MyType::new();
+    foo::bar::Baz::create();
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &[], false, false).unwrap();
+    assert!(!changed);
+}
+
+#[test]
 fn test_preserves_doc_comments() {
     let input = r#"
 /// This is a doc comment
