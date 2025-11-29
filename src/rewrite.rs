@@ -11,8 +11,9 @@ use syn::{
     spanned::Spanned,
     visit::{self, Visit},
     visit_mut::{self, VisitMut},
-};
-use visit_mut::{visit_local_mut, visit_pat_ident_mut};
+};use visit_mut::visit_local_mut;
+use visit_mut::visit_pat_ident_mut;
+
 
 // Information about a fully-qualified function path we want to shorten.
 #[derive(Clone)]
