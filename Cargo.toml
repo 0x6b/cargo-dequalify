@@ -24,3 +24,8 @@ tempfile = "3.23.0"
 
 [lints.clippy]
 pedantic = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
