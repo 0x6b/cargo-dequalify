@@ -564,3 +564,45 @@ fn main() {
     // New imports should be on their own line, not breaking the comment
     assert!(!output.contains("日本語コメン\n"));
 }
+
+#[test]
+fn test_qualified_macro_rewrite() {
+    let input = r#"
+fn main() {
+    anyhow::bail!("error");
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use anyhow::bail;"));
+    assert!(output.contains("bail!(\"error\")"));
+    assert!(!output.contains("anyhow::bail!"));
+}
+
+#[test]
+fn test_multiple_qualified_macros() {
+    let input = r#"
+fn main() {
+    anyhow::bail!("error");
+    tokio::select! {
+        _ = async {} => {}
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use anyhow::bail;"));
+    assert!(output.contains("use tokio::select;"));
+}
+
+#[test]
+fn test_macro_with_ignore_roots() {
+    let input = r#"
+fn main() {
+    anyhow::bail!("error");
+    std::println!("hello");
+}
+"#;
+    let output = process_source(input, &["std".to_string()]);
+    assert!(output.contains("use anyhow::bail;"));
+    assert!(!output.contains("use std::println;"));
+    assert!(output.contains("std::println!"));
+}

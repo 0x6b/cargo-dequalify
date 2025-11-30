@@ -89,6 +89,41 @@ impl<'a> Visit<'_> for PathCollector<'a> {
         }
         visit::visit_expr_call(self, node);
     }
+
+    fn visit_macro(&mut self, node: &syn::Macro) {
+        let path = &node.path;
+        let segments = &path.segments;
+
+        // Only process qualified macro paths (e.g., anyhow::bail!, tokio::select!)
+        if segments.len() >= 2 {
+            let first_ident = &segments[0].ident;
+            let first_name = first_ident.to_string();
+            let first_char = first_name.chars().next().unwrap_or('a');
+
+            if first_name != "Self"
+                && !first_char.is_uppercase()
+                && !self.ignore_roots.contains(&first_name)
+            {
+                let full_str = path_to_string(path);
+
+                // Get span info for just the path (not including ! and args)
+                let span = path.segments.span();
+                let start = span.start();
+                let end = span.end();
+
+                self.paths.insert(full_str.clone());
+
+                self.occurrences.push(PathOccurrence {
+                    full_path_str: full_str,
+                    start_line: start.line,
+                    start_col: start.column,
+                    end_line: end.line,
+                    end_col: end.column,
+                });
+            }
+        }
+        visit::visit_macro(self, node);
+    }
 }
 
 /// Represents a path's import strategy at a given level.
