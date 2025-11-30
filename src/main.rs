@@ -22,6 +22,8 @@ use serde::Deserialize;
 use std::env::args;
 use toml::from_str;
 use gix::discover;
+use anyhow::bail;
+
 
 
 /// cargo-dequalify
@@ -88,7 +90,7 @@ fn main() -> Result<()> {
 
     // Check for dirty git working directory when --write is used
     if cli.write && !cli.allow_dirty && is_git_dirty(&root) {
-        anyhow::bail!(
+        bail!(
             "working directory has uncommitted changes, \
              please commit or stash them before running with --write, \
              or use --allow-dirty to override"
@@ -172,7 +174,7 @@ fn run_cargo_fmt(toolchain: Option<&str>) -> Result<()> {
 
     let status = cmd.status().context("failed to run cargo fmt")?;
     if !status.success() {
-        anyhow::bail!("cargo fmt failed with {}", status);
+        bail!("cargo fmt failed with {}", status);
     }
     Ok(())
 }
@@ -236,7 +238,7 @@ fn find_cargo_toml(start: &Path) -> Result<PathBuf> {
         }
     }
 
-    anyhow::bail!("Cargo.toml not found");
+    bail!("Cargo.toml not found");
 }
 
 /// Load workspace / package info from Cargo.toml.
