@@ -19,12 +19,6 @@ use syn::{
 };
 use visit_mut::{visit_local_mut, visit_pat_ident_mut};
 
-// Information about a fully-qualified function path we want to shorten.
-#[derive(Clone)]
-struct PathInfo {
-    line: usize,
-}
-
 // A single occurrence of a path in the source that needs rewriting.
 #[derive(Clone, Debug)]
 struct PathOccurrence {
@@ -37,7 +31,7 @@ struct PathOccurrence {
 
 // Collect all candidate fully-qualified paths from function calls.
 struct PathCollector<'a> {
-    paths: BTreeMap<String, PathInfo>,
+    paths: BTreeSet<String>,
     occurrences: Vec<PathOccurrence>,
     ignore_roots: &'a BTreeSet<String>,
 }
@@ -45,7 +39,7 @@ struct PathCollector<'a> {
 impl<'a> PathCollector<'a> {
     fn new(ignore_roots: &'a BTreeSet<String>) -> Self {
         Self {
-            paths: BTreeMap::new(),
+            paths: BTreeSet::new(),
             occurrences: Vec::new(),
             ignore_roots,
         }
@@ -81,9 +75,7 @@ impl<'a> Visit<'_> for PathCollector<'a> {
                     let start = span.start();
                     let end = span.end();
 
-                    self.paths
-                        .entry(full_str.clone())
-                        .or_insert(PathInfo { line: start.line });
+                    self.paths.insert(full_str.clone());
 
                     self.occurrences.push(PathOccurrence {
                         full_path_str: full_str,
@@ -276,7 +268,6 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         .cloned()
         .collect();
 
-    let file_path_str = path.display().to_string();
     let line_offsets = LineOffsets::new(&src);
 
     // Group occurrences by path for efficient lookup
@@ -286,7 +277,7 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
     }
 
     // Collect all unique paths
-    let all_paths: Vec<String> = collector.paths.keys().cloned().collect();
+    let all_paths: Vec<String> = collector.paths.iter().cloned().collect();
 
     // Resolve all imports using multi-pass algorithm
     let strategies = resolve_all_imports(&all_paths, &existing_idents);
@@ -295,13 +286,9 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
     let mut replacements: Vec<Replacement> = Vec::new();
     let mut use_statements: Vec<String> = Vec::new();
 
-    for (full_path_str, info) in &collector.paths {
+    for full_path_str in &collector.paths {
         let Some(strategy) = strategies.get(full_path_str) else {
-            // Path couldn't be resolved (all levels conflict)
-            eprintln!(
-                "conflict in {}:{}: cannot resolve `{}` without conflicts at any level",
-                file_path_str, info.line, full_path_str
-            );
+            // Path couldn't be resolved (all levels conflict) - silently skip
             continue;
         };
 
