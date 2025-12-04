@@ -846,3 +846,72 @@ fn some_function() {
     assert!(output.contains("spawn(async"));
     assert!(output.contains("read_to_string(\"x\")"));
 }
+
+#[test]
+fn test_local_internal_import_not_expanded() {
+    // `use crate::foo;` inside a function creates a local alias for an internal module.
+    // Paths using that alias should NOT be expanded since adding a file-level import
+    // would be redundant.
+    let input = r#"
+mod commands {
+    pub fn execute() {}
+}
+
+impl Foo {
+    fn bar(self) {
+        use crate::commands;
+        commands::execute();
+    }
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &[], false).unwrap();
+    // No changes should be made - crate::commands is an internal import
+    assert!(changed.is_none());
+}
+
+#[test]
+fn test_local_self_import_not_expanded() {
+    // `use self::foo;` inside a function creates a local alias for an internal module.
+    let input = r#"
+mod commands {
+    pub fn execute() {}
+}
+
+fn bar() {
+    use self::commands;
+    commands::execute();
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &[], false).unwrap();
+    // No changes should be made - self::commands is an internal import
+    assert!(changed.is_none());
+}
+
+#[test]
+fn test_local_super_import_not_expanded() {
+    // `use super::foo;` inside a nested function creates a local alias for an internal module.
+    let input = r#"
+mod commands {
+    pub fn execute() {}
+}
+
+mod nested {
+    fn bar() {
+        use super::commands;
+        commands::execute();
+    }
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &[], false).unwrap();
+    // No changes should be made - super::commands is an internal import
+    assert!(changed.is_none());
+}

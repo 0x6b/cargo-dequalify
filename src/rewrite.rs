@@ -23,10 +23,8 @@ use visit_mut::{visit_local_mut, visit_pat_ident_mut};
 /// Rust primitive types that cannot be imported via `use` statements.
 /// These include numeric types, bool, char, str, and never type.
 const PRIMITIVE_TYPES: &[&str] = &[
-    "bool", "char", "str",
-    "i8", "i16", "i32", "i64", "i128", "isize",
-    "u8", "u16", "u32", "u64", "u128", "usize",
-    "f32", "f64",
+    "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
+    "u128", "usize", "f32", "f64",
 ];
 
 // A single occurrence of a path in the source that needs rewriting.
@@ -63,10 +61,17 @@ struct PathCollector<'a> {
     scope_infos: BTreeMap<String, ScopeInfo>,
     /// Line offsets for byte position calculation
     line_offsets: &'a LineOffsets,
-    /// Mapping from imported names to their full paths.
+    /// Mapping from imported names to their full paths (file-level imports only).
     /// e.g., `use tokio::task;` creates mapping: "task" → "tokio::task"
     /// This allows expanding `task::spawn` to `tokio::task::spawn`.
     import_mappings: BTreeMap<String, String>,
+    /// Names that are imported locally (inside functions/blocks) from internal paths
+    /// (`crate::`, `self::`, `super::`). Paths starting with these names should be skipped
+    /// since they're already resolved by a local import and expanding them would just
+    /// create redundant file-level imports.
+    locally_imported_internal_names: BTreeSet<String>,
+    /// Depth of nested blocks (functions, closures, blocks). When > 0, we're inside a block scope.
+    block_depth: usize,
 }
 
 impl<'a> PathCollector<'a> {
@@ -79,7 +84,19 @@ impl<'a> PathCollector<'a> {
             scope_infos: BTreeMap::new(),
             line_offsets,
             import_mappings: BTreeMap::new(),
+            locally_imported_internal_names: BTreeSet::new(),
+            block_depth: 0,
         }
+    }
+
+    /// Check if a name is locally imported from an internal path (crate/self/super).
+    fn is_locally_imported_internal(&self, name: &str) -> bool {
+        self.locally_imported_internal_names.contains(name)
+    }
+
+    /// Check if we're currently inside a block scope (function body, closure, etc.)
+    fn is_in_block_scope(&self) -> bool {
+        self.block_depth > 0
     }
 
     /// Get the current scope as a string (e.g., "" for file level, "tests" for mod tests)
@@ -102,12 +119,40 @@ impl<'a> PathCollector<'a> {
 }
 
 impl Visit<'_> for PathCollector<'_> {
-    // Collect all import mappings from `use` statements anywhere in the file.
-    // This includes `use` in functions, which create local aliases.
-    // We track the full path so we can expand paths like `task::spawn` to `tokio::task::spawn`.
+    // Collect import mappings from `use` statements.
+    // All imports (file-level and block-level) are stored in `import_mappings` for path expansion.
+    // Block-level imports of internal paths (crate/self/super) are additionally tracked to skip
+    // them.
     fn visit_item_use(&mut self, node: &syn::ItemUse) {
+        // Always collect mappings for path expansion
         collect_use_mappings(&node.tree, &Vec::new(), &mut self.import_mappings);
+
+        if self.is_in_block_scope() && is_internal_use_tree(&node.tree) {
+            // This is a local import of an internal path - track to skip later
+            collect_use_idents(&node.tree, &mut self.locally_imported_internal_names);
+        }
         visit::visit_item_use(self, node);
+    }
+
+    // Track when entering function bodies
+    fn visit_item_fn(&mut self, node: &syn::ItemFn) {
+        self.block_depth += 1;
+        visit::visit_item_fn(self, node);
+        self.block_depth -= 1;
+    }
+
+    // Track when entering impl method bodies
+    fn visit_impl_item_fn(&mut self, node: &syn::ImplItemFn) {
+        self.block_depth += 1;
+        visit::visit_impl_item_fn(self, node);
+        self.block_depth -= 1;
+    }
+
+    // Track when entering closures
+    fn visit_expr_closure(&mut self, node: &syn::ExprClosure) {
+        self.block_depth += 1;
+        visit::visit_expr_closure(self, node);
+        self.block_depth -= 1;
     }
 
     fn visit_expr_call(&mut self, node: &ExprCall) {
@@ -120,17 +165,28 @@ impl Visit<'_> for PathCollector<'_> {
                 let first_ident = &segments[0].ident;
                 let first_name = first_ident.to_string();
 
-                // Try to expand the path if the first segment is a local import.
+                // Skip paths that start with a locally imported internal name (crate/self/super).
+                // They're already resolved by a local `use` statement and expanding them
+                // would just create redundant file-level imports.
+                if self.is_locally_imported_internal(&first_name) {
+                    visit::visit_expr_call(self, node);
+                    return;
+                }
+
+                // Try to expand the path if the first segment is a file-level import.
                 // e.g., if `use tokio::task;` then `task::spawn` expands to `tokio::task::spawn`
-                let remaining: Vec<String> = segments.iter().skip(1).map(|s| s.ident.to_string()).collect();
-                let (full_str, effective_first_name) = if let Some(expanded) = self.expand_path(&first_name, &remaining) {
-                    // Path was expanded - use the expanded version
-                    let expanded_first = expanded.split("::").next().unwrap_or(&first_name).to_string();
-                    (expanded, expanded_first)
-                } else {
-                    // No expansion needed - use the original path
-                    (path_to_string(path), first_name.clone())
-                };
+                let remaining: Vec<String> =
+                    segments.iter().skip(1).map(|s| s.ident.to_string()).collect();
+                let (full_str, effective_first_name) =
+                    if let Some(expanded) = self.expand_path(&first_name, &remaining) {
+                        // Path was expanded - use the expanded version
+                        let expanded_first =
+                            expanded.split("::").next().unwrap_or(&first_name).to_string();
+                        (expanded, expanded_first)
+                    } else {
+                        // No expansion needed - use the original path
+                        (path_to_string(path), first_name.clone())
+                    };
 
                 let first_char = effective_first_name.chars().next().unwrap_or('a');
 
@@ -214,14 +270,8 @@ impl Visit<'_> for PathCollector<'_> {
                 self.line_offsets.line_end_byte(brace_span.end().line)
             };
 
-            self.scope_infos.insert(
-                current_scope,
-                ScopeInfo {
-                    insert_pos,
-                    imported_idents,
-                    indent,
-                },
-            );
+            self.scope_infos
+                .insert(current_scope, ScopeInfo { insert_pos, imported_idents, indent });
 
             // Visit children
             visit::visit_item_mod(self, node);
@@ -242,9 +292,20 @@ impl Visit<'_> for PathCollector<'_> {
             let first_ident = &segments[0].ident;
             let first_name = first_ident.to_string();
 
-            // Try to expand the path if the first segment is a local import.
-            let remaining: Vec<String> = segments.iter().skip(1).map(|s| s.ident.to_string()).collect();
-            let (full_str, effective_first_name) = if let Some(expanded) = self.expand_path(&first_name, &remaining) {
+            // Skip paths that start with a locally imported internal name (crate/self/super).
+            // They're already resolved by a local `use` statement and expanding them
+            // would just create redundant file-level imports.
+            if self.is_locally_imported_internal(&first_name) {
+                visit::visit_macro(self, node);
+                return;
+            }
+
+            // Try to expand the path if the first segment is a file-level import.
+            let remaining: Vec<String> =
+                segments.iter().skip(1).map(|s| s.ident.to_string()).collect();
+            let (full_str, effective_first_name) = if let Some(expanded) =
+                self.expand_path(&first_name, &remaining)
+            {
                 let expanded_first = expanded.split("::").next().unwrap_or(&first_name).to_string();
                 (expanded, expanded_first)
             } else {
@@ -350,7 +411,8 @@ fn resolve_all_imports(
     paths: &[String],
     existing_idents: &BTreeSet<String>,
 ) -> BTreeMap<String, ImportStrategy> {
-    let mut strategies: Vec<ImportStrategy> = paths.iter().map(|p| ImportStrategy::new(p)).collect();
+    let mut strategies: Vec<ImportStrategy> =
+        paths.iter().map(|p| ImportStrategy::new(p)).collect();
 
     // Phase 1: Resolve conflicts between new imports
     // Keep bumping until no more internal conflicts
@@ -486,9 +548,10 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
     // Process each scope
     for (scope, occurrences) in &occ_by_scope {
         // Get scope info (if not found, use file-level - shouldn't happen but be safe)
-        let scope_info = collector.scope_infos.get(*scope).unwrap_or_else(|| {
-            collector.scope_infos.get("").unwrap()
-        });
+        let scope_info = collector
+            .scope_infos
+            .get(*scope)
+            .unwrap_or_else(|| collector.scope_infos.get("").unwrap());
 
         // Combine file-level imports with scope-specific imports for conflict detection
         let mut existing_idents: BTreeSet<String> = file_level_imported.clone();
@@ -496,7 +559,8 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         existing_idents.extend(local_idents.clone());
 
         // Collect unique paths in this scope
-        let scope_paths: BTreeSet<&str> = occurrences.iter().map(|o| o.full_path_str.as_str()).collect();
+        let scope_paths: BTreeSet<&str> =
+            occurrences.iter().map(|o| o.full_path_str.as_str()).collect();
         let scope_paths_vec: Vec<String> = scope_paths.iter().map(|&s| s.to_owned()).collect();
 
         // Resolve imports for this scope
@@ -521,11 +585,7 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
             let end_byte = line_offsets.line_col_to_byte(occ.end_line, occ.end_col);
 
             if let (Some(start), Some(end)) = (start_byte, end_byte) {
-                edits.push(Edit::Replace {
-                    start,
-                    end,
-                    text: strategy.replacement(),
-                });
+                edits.push(Edit::Replace { start, end, text: strategy.replacement() });
             }
         }
 
@@ -534,15 +594,10 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
             use_statements.sort();
             let indent = &scope_info.indent;
             // Add indentation to each use statement
-            let indented_uses: Vec<String> = use_statements
-                .iter()
-                .map(|s| format!("{indent}{s}"))
-                .collect();
+            let indented_uses: Vec<String> =
+                use_statements.iter().map(|s| format!("{indent}{s}")).collect();
             let use_block = "\n".to_string() + &indented_uses.join("\n") + "\n";
-            edits.push(Edit::Insert {
-                pos: scope_info.insert_pos,
-                text: use_block,
-            });
+            edits.push(Edit::Insert { pos: scope_info.insert_pos, text: use_block });
         }
     }
 
@@ -661,11 +716,7 @@ fn find_use_insert_position(ast: &File, line_offsets: &LineOffsets) -> usize {
 
     // Return the byte position at the end of the line containing the last use statement.
     // This ensures we don't insert in the middle of trailing comments.
-    if let Some(line) = last_use_line {
-        line_offsets.line_end_byte(line)
-    } else {
-        0
-    }
+    if let Some(line) = last_use_line { line_offsets.line_end_byte(line) } else { 0 }
 }
 
 // Collect the identifiers that are already imported into the file via `use`.
@@ -696,6 +747,23 @@ fn collect_use_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
             }
         }
         UseTree::Glob(_g) => {}
+    }
+}
+
+/// Check if a use tree starts with an internal path (crate, self, super).
+fn is_internal_use_tree(tree: &UseTree) -> bool {
+    match tree {
+        UseTree::Path(p) => {
+            let first = p.ident.to_string();
+            first == "crate" || first == "self" || first == "super"
+        }
+        UseTree::Group(g) => {
+            // A group at the root level (without a path prefix) is unusual,
+            // but check all items just in case
+            g.items.iter().all(is_internal_use_tree)
+        }
+        // Name/Rename/Glob at root level are external imports
+        _ => false,
     }
 }
 

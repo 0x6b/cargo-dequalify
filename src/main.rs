@@ -1,6 +1,7 @@
 mod rewrite;
 
 use std::{
+    env::args,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -11,20 +12,16 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use dunce::canonicalize;
-use rayon::prelude::*;
 use fs::read_to_string;
+use gix::discover;
 use ignore::WalkBuilder;
+use rayon::prelude::*;
 use rewrite::process_file;
 use serde::Deserialize;
-use std::env::args;
 use toml::from_str;
-use gix::discover;
-use anyhow::bail;
-
-
 
 /// cargo-dequalify
 ///
@@ -37,8 +34,8 @@ use anyhow::bail;
 /// By default:
 ///   - Runs on the current workspace (or single crate)
 ///   - Uses dry-run mode (use -w to write changes)
-///   - On conflict, imports the parent module instead
-///     (e.g., `tokio::task::spawn` → use `tokio::task`; `task::spawn()`)
+///   - On conflict, imports the parent module instead (e.g., `tokio::task::spawn` → use
+///     `tokio::task`; `task::spawn()`)
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -129,8 +126,9 @@ fn main() -> Result<()> {
     let diffs: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
 
     // Process all files in parallel
-    rs_files.par_iter().for_each(|path| {
-        match process_file(path, &cli.ignore_roots, !cli.write) {
+    rs_files
+        .par_iter()
+        .for_each(|path| match process_file(path, &cli.ignore_roots, !cli.write) {
             Ok(Some(diff)) => {
                 any_changes.store(true, Ordering::Relaxed);
                 if !diff.is_empty() {
@@ -139,8 +137,7 @@ fn main() -> Result<()> {
             }
             Ok(None) => {}
             Err(e) => eprintln!("error processing {}: {}", path.display(), e),
-        }
-    });
+        });
 
     // Print diffs sorted by path (deterministic output)
     let mut diffs = diffs.into_inner().unwrap();
@@ -286,4 +283,3 @@ fn workspace_crate_roots(cargo_toml: &Path, ws: &WorkspaceInfo) -> Vec<PathBuf> 
     roots.dedup();
     roots
 }
-
