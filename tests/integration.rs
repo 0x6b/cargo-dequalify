@@ -1023,3 +1023,43 @@ impl FromStr for Config {
         "Should NOT have `anyhow::anyhow::Error`, got:\n{output}"
     );
 }
+
+#[test]
+fn test_prelude_type_shadowing_prevention() {
+    // When a file uses `Result<T, E>` (prelude's Result), we should NOT import
+    // `std::fmt::Result` as that would shadow the prelude type and break the code.
+    // std::fmt::Result is `Result<(), Error>` with no type parameters.
+    let input = r#"
+use std::fmt;
+
+impl fmt::Display for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Config")
+    }
+}
+
+impl FromStr for Config {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Config)
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should dequalify Formatter but NOT Result (since Result<Self, Self::Err> uses prelude's Result)
+    assert!(
+        output.contains("use std::fmt::Formatter;"),
+        "Should have `use std::fmt::Formatter;`, got:\n{output}"
+    );
+    // Should NOT have `use std::fmt::Result;` as that would shadow the prelude's Result
+    assert!(
+        !output.contains("use std::fmt::Result;"),
+        "Should NOT have `use std::fmt::Result;` (would shadow prelude), got:\n{output}"
+    );
+    // The return type should stay as fmt::Result (not dequalified)
+    assert!(
+        output.contains("-> fmt::Result"),
+        "Should keep `fmt::Result` qualified, got:\n{output}"
+    );
+}

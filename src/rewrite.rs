@@ -28,6 +28,23 @@ const PRIMITIVE_TYPES: &[&str] = &[
     "u128", "usize", "f32", "f64",
 ];
 
+/// Rust prelude types that are automatically in scope.
+/// These types may be used unqualified in code, and importing a different type
+/// with the same name would shadow them, causing subtle bugs.
+/// For example, `use std::fmt::Result;` would shadow `std::result::Result`.
+const PRELUDE_TYPES: &[&str] = &[
+    // std::option
+    "Option",
+    // std::result
+    "Result",
+    // std::boxed
+    "Box",
+    // std::string
+    "String",
+    // std::vec
+    "Vec",
+];
+
 // A single occurrence of a path in the source that needs rewriting.
 #[derive(Clone, Debug)]
 struct PathOccurrence {
@@ -615,6 +632,7 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
     }
 
     let local_idents = collect_local_idents(&ast);
+    let used_prelude_types = collect_unqualified_prelude_usages(&ast);
 
     // Group occurrences by scope
     let mut occ_by_scope: BTreeMap<&str, Vec<&PathOccurrence>> = BTreeMap::new();
@@ -636,6 +654,9 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         let mut existing_idents: BTreeSet<String> = file_level_imported.clone();
         existing_idents.extend(scope_info.imported_idents.clone());
         existing_idents.extend(local_idents.clone());
+        // Add prelude types that are actually used unqualified to prevent shadowing
+        // (e.g., if `Result<T, E>` is used, we won't import `std::fmt::Result`)
+        existing_idents.extend(used_prelude_types.clone());
 
         // Collect unique paths in this scope
         let scope_paths: BTreeSet<&str> =
@@ -973,6 +994,38 @@ fn collect_pattern_idents(pat: &Pat, out: &mut BTreeSet<String>) {
         }
         _ => {}
     }
+}
+
+/// Collect unqualified usages of prelude types in the AST.
+/// Returns only prelude type names that are actually used unqualified in the file.
+/// This prevents shadowing - e.g., if `Result<T, E>` is used, we won't import `std::fmt::Result`.
+fn collect_unqualified_prelude_usages(ast: &File) -> BTreeSet<String> {
+    struct PreludeUsageCollector {
+        used_prelude_types: BTreeSet<String>,
+    }
+
+    impl<'ast> Visit<'ast> for PreludeUsageCollector {
+        fn visit_type_path(&mut self, node: &'ast TypePath) {
+            // Only check paths without a qself (not <T as Trait>::Type)
+            if node.qself.is_none() {
+                let segments: Vec<_> = node.path.segments.iter().collect();
+                // Check for single-segment paths (unqualified usage)
+                if segments.len() == 1 {
+                    let ident = segments[0].ident.to_string();
+                    if PRELUDE_TYPES.contains(&ident.as_str()) {
+                        self.used_prelude_types.insert(ident);
+                    }
+                }
+            }
+            visit::visit_type_path(self, node);
+        }
+    }
+
+    let mut collector = PreludeUsageCollector {
+        used_prelude_types: BTreeSet::new(),
+    };
+    collector.visit_file(ast);
+    collector.used_prelude_types
 }
 
 fn format_diff(path: &Path, old: &str, new: &str) -> String {
