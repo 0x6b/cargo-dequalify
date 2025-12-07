@@ -42,6 +42,7 @@ Arguments:
 
 Options:
   -w, --write                        Actually modify files (default: dry-run mode)
+      --allow-dirty                  Allow running --write on a dirty git working directory
       --ignore-roots <IGNORE_ROOTS>  Comma-separated list of top-level roots to ignore (e.g. "std,core,alloc")
   -f, --fmt [<TOOLCHAIN>]            Run cargo fmt after writing changes. Optionally specify a toolchain (e.g.,
                                      --fmt=nightly)
@@ -77,9 +78,9 @@ If the parent module name also conflicts, it goes up another level. If no valid 
 
 ## Limitations
 
-- Only rewrites function calls, not type paths
-- Skips paths starting with uppercase (type-associated functions like `Vec::new()`)
+- Skips type-associated functions (e.g., `Vec::new()`, `String::from()`)
 - Skips `Self::` paths
+- Skips primitive type methods (e.g., `str::len()`)
 
 ## License
 
