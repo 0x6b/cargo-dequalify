@@ -8,9 +8,9 @@ use std::{
 use anyhow::{Context, Result};
 use similar::{ChangeTag, TextDiff};
 use syn::{
-    ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn, ItemImpl, ItemMod,
-    ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local, Macro, Pat, PatIdent,
-    Path as SynPath, TypePath, UseTree, parse_file,
+    Attribute, ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn,
+    ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local,
+    Macro, Pat, PatIdent, Path as SynPath, TypePath, UseTree, parse_file,
     spanned::Spanned,
     visit::{
         Visit, {self},
@@ -20,6 +20,21 @@ use syn::{
     },
 };
 use visit_mut::{visit_local_mut, visit_pat_ident_mut};
+
+/// Extract #[cfg(...)] attributes from an attribute list.
+/// Returns a vector of cfg attribute strings (e.g., ["cfg(test)", "cfg(unix)"]).
+fn extract_cfg_attrs(attrs: &[Attribute]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("cfg") {
+                Some(format!("cfg{}", attr.meta.require_list().ok()?.tokens.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Rust primitive types that cannot be imported via `use` statements.
 /// These include numeric types, bool, char, str, and never type.
@@ -94,6 +109,9 @@ struct PathCollector<'a> {
     locally_imported_internal_names: BTreeSet<String>,
     /// Depth of nested blocks (functions, closures, blocks). When > 0, we're inside a block scope.
     block_depth: usize,
+    /// Stack of #[cfg(...)] attributes currently in scope.
+    /// Each entry is the string representation of a cfg attribute (e.g., "cfg(test)").
+    cfg_stack: Vec<String>,
 }
 
 impl<'a> PathCollector<'a> {
@@ -108,7 +126,16 @@ impl<'a> PathCollector<'a> {
             import_mappings: BTreeMap::new(),
             locally_imported_internal_names: BTreeSet::new(),
             block_depth: 0,
+            cfg_stack: Vec::new(),
         }
+    }
+
+    /// Get current cfg attributes as a sorted, deduplicated vector.
+    fn current_cfg_attrs(&self) -> Vec<String> {
+        let mut attrs: Vec<String> = self.cfg_stack.clone();
+        attrs.sort();
+        attrs.dedup();
+        attrs
     }
 
     /// Check if a name is locally imported from an internal path (crate/self/super).
@@ -169,18 +196,26 @@ impl Visit<'_> for PathCollector<'_> {
         visit::visit_item_use(self, node);
     }
 
-    // Track when entering function bodies
+    // Track when entering function bodies and their cfg attributes
     fn visit_item_fn(&mut self, node: &syn::ItemFn) {
+        let cfg_attrs = extract_cfg_attrs(&node.attrs);
+        let cfg_count = cfg_attrs.len();
+        self.cfg_stack.extend(cfg_attrs);
         self.block_depth += 1;
         visit::visit_item_fn(self, node);
         self.block_depth -= 1;
+        self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
 
-    // Track when entering impl method bodies
+    // Track when entering impl method bodies and their cfg attributes
     fn visit_impl_item_fn(&mut self, node: &ImplItemFn) {
+        let cfg_attrs = extract_cfg_attrs(&node.attrs);
+        let cfg_count = cfg_attrs.len();
+        self.cfg_stack.extend(cfg_attrs);
         self.block_depth += 1;
         visit::visit_impl_item_fn(self, node);
         self.block_depth -= 1;
+        self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
 
     // Track when entering closures
@@ -188,6 +223,15 @@ impl Visit<'_> for PathCollector<'_> {
         self.block_depth += 1;
         visit::visit_expr_closure(self, node);
         self.block_depth -= 1;
+    }
+
+    // Track cfg attributes on impl blocks
+    fn visit_item_impl(&mut self, node: &ItemImpl) {
+        let cfg_attrs = extract_cfg_attrs(&node.attrs);
+        let cfg_count = cfg_attrs.len();
+        self.cfg_stack.extend(cfg_attrs);
+        visit::visit_item_impl(self, node);
+        self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
 
     fn visit_expr_call(&mut self, node: &ExprCall) {
@@ -259,6 +303,7 @@ impl Visit<'_> for PathCollector<'_> {
                         end_line: end.line,
                         end_col: end.column,
                         scope: self.current_scope(),
+                        cfg_attrs: self.current_cfg_attrs(),
                     });
                 }
             }
@@ -267,6 +312,11 @@ impl Visit<'_> for PathCollector<'_> {
     }
 
     fn visit_item_mod(&mut self, node: &ItemMod) {
+        // Track cfg attributes on the module
+        let cfg_attrs = extract_cfg_attrs(&node.attrs);
+        let cfg_count = cfg_attrs.len();
+        self.cfg_stack.extend(cfg_attrs);
+
         // Only process inline modules (with content)
         if let Some((brace, items)) = &node.content {
             let mod_name = node.ident.to_string();
@@ -316,6 +366,8 @@ impl Visit<'_> for PathCollector<'_> {
             // External module (mod foo;) - just visit normally
             visit::visit_item_mod(self, node);
         }
+
+        self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
 
     fn visit_macro(&mut self, node: &Macro) {
@@ -367,6 +419,7 @@ impl Visit<'_> for PathCollector<'_> {
                     end_line: end.line,
                     end_col: end.column,
                     scope: self.current_scope(),
+                    cfg_attrs: self.current_cfg_attrs(),
                 });
             }
         }
@@ -432,6 +485,7 @@ impl Visit<'_> for PathCollector<'_> {
                     end_line: end.line,
                     end_col: end.column,
                     scope: self.current_scope(),
+                    cfg_attrs: self.current_cfg_attrs(),
                 });
             }
         }
