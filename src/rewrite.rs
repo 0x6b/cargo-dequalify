@@ -909,19 +909,37 @@ fn collect_imported_idents(ast: &File) -> BTreeSet<String> {
 }
 
 fn collect_use_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
+    collect_use_idents_with_prefix(tree, None, out);
+}
+
+fn collect_use_idents_with_prefix(
+    tree: &UseTree,
+    parent_ident: Option<&str>,
+    out: &mut BTreeSet<String>,
+) {
     match tree {
         UseTree::Name(n) => {
-            out.insert(n.ident.to_string());
+            let name = n.ident.to_string();
+            if name == "self" {
+                // `use std::io::{self, ...}` - `self` imports the parent module name
+                if let Some(parent) = parent_ident {
+                    out.insert(parent.to_string());
+                }
+            } else {
+                out.insert(name);
+            }
         }
         UseTree::Rename(r) => {
+            // For renames, we care about what name is introduced to scope
             out.insert(r.rename.to_string());
         }
         UseTree::Path(p) => {
-            collect_use_idents(&p.tree, out);
+            let ident = p.ident.to_string();
+            collect_use_idents_with_prefix(&p.tree, Some(&ident), out);
         }
         UseTree::Group(g) => {
             for t in &g.items {
-                collect_use_idents(t, out);
+                collect_use_idents_with_prefix(t, parent_ident, out);
             }
         }
         UseTree::Glob(_g) => {}
@@ -945,27 +963,62 @@ fn is_internal_use_tree(tree: &UseTree) -> bool {
     }
 }
 
+/// Normalize a path by resolving its first segment through existing mappings.
+/// e.g., if `io` maps to `std::io`, then `io::stdout` becomes `std::io::stdout`.
+fn normalize_path(full: String, mappings: &BTreeMap<String, String>) -> String {
+    let segments: Vec<&str> = full.split("::").collect();
+    if let Some(&first) = segments.first() {
+        if let Some(base) = mappings.get(first) {
+            let mut new_segments: Vec<&str> = base.split("::").collect();
+            new_segments.extend(segments.iter().skip(1));
+            return new_segments.join("::");
+        }
+    }
+    full
+}
+
 /// Collect import mappings from a use tree.
 /// Maps the imported name to its full path.
 /// e.g., `use tokio::task;` creates mapping: `task` → `tokio::task`
 /// e.g., `use tokio::task as t;` creates mapping: `t` → `tokio::task`
+/// e.g., `use std::io::{self, Write};` creates mappings: `io` → `std::io`, `Write` → `std::io::Write`
+/// Chained imports like `use io::stdout;` (where `io` is already mapped) are normalized.
 fn collect_use_mappings(tree: &UseTree, prefix: &[String], out: &mut BTreeMap<String, String>) {
     match tree {
         UseTree::Name(n) => {
             let name = n.ident.to_string();
-            let mut full_path_parts: Vec<String> = prefix.to_vec();
-            full_path_parts.push(name.clone());
-            let full_path = full_path_parts.join("::");
-            out.insert(name, full_path);
+            if name == "self" {
+                // `use std::io::{self, ...}` - `self` imports the module itself
+                // Map the last segment of prefix (e.g., `io`) to the full prefix path (e.g., `std::io`)
+                if let Some(local_name) = prefix.last() {
+                    let full_path = prefix.join("::");
+                    let full_path = normalize_path(full_path, out);
+                    out.insert(local_name.clone(), full_path);
+                }
+            } else {
+                let mut full_path_parts: Vec<String> = prefix.to_vec();
+                full_path_parts.push(name.clone());
+                let full_path = full_path_parts.join("::");
+                let full_path = normalize_path(full_path, out);
+                out.insert(name, full_path);
+            }
         }
         UseTree::Rename(r) => {
-            // `use foo::bar as baz;` - baz maps to foo::bar
             let alias = r.rename.to_string();
             let original = r.ident.to_string();
-            let mut full_path_parts: Vec<String> = prefix.to_vec();
-            full_path_parts.push(original);
-            let full_path = full_path_parts.join("::");
-            out.insert(alias, full_path);
+            if original == "self" {
+                // `use std::io::{self as io_mod, ...}` - rare but handle it
+                let full_path = prefix.join("::");
+                let full_path = normalize_path(full_path, out);
+                out.insert(alias, full_path);
+            } else {
+                // `use foo::bar as baz;` - baz maps to foo::bar
+                let mut full_path_parts: Vec<String> = prefix.to_vec();
+                full_path_parts.push(original);
+                let full_path = full_path_parts.join("::");
+                let full_path = normalize_path(full_path, out);
+                out.insert(alias, full_path);
+            }
         }
         UseTree::Path(p) => {
             let segment = p.ident.to_string();

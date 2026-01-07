@@ -1214,3 +1214,123 @@ fn test_only() {
     );
     assert!(has_non_gated, "Should have non-gated import, got:\n{output}");
 }
+
+#[test]
+fn test_self_import_expansion() {
+    // When `io` is imported via `{self}`, paths like `io::stdin()` should be expanded
+    // to `std::io::stdin` and dequalified to `stdin()`.
+    let input = r#"
+use std::io::{self, ErrorKind};
+
+fn main() {
+    io::stdin();
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should add import for stdin
+    assert!(
+        output.contains("use std::io::stdin;"),
+        "Should have `use std::io::stdin;`, got:\n{output}"
+    );
+    // Should dequalify io::stdin() to stdin()
+    assert!(
+        output.contains("stdin()") && !output.contains("io::stdin()"),
+        "Should dequalify io::stdin() to stdin(), got:\n{output}"
+    );
+}
+
+#[test]
+fn test_chained_import_expansion() {
+    // When `io` is imported via `{self}`, and then `use io::stdout;` is used,
+    // paths like `io::stdin()` should still be expanded correctly.
+    let input = r#"
+use std::io::{self, ErrorKind};
+use io::stdout;
+
+fn main() {
+    io::stdin();
+    stdout();
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should add import for stdin
+    assert!(
+        output.contains("use std::io::stdin;"),
+        "Should have `use std::io::stdin;`, got:\n{output}"
+    );
+    // Should dequalify io::stdin() to stdin()
+    assert!(
+        output.contains("stdin()") && !output.contains("io::stdin()"),
+        "Should dequalify io::stdin() to stdin(), got:\n{output}"
+    );
+    // stdout() should remain (already imported via chained import)
+    assert!(
+        output.contains("stdout()"),
+        "Should keep stdout(), got:\n{output}"
+    );
+}
+
+#[test]
+fn test_self_import_with_qualified_call_to_existing_import() {
+    // When `stdout` is already imported via chained import, and we call `io::stdout()`,
+    // the tool should recognize it conflicts and use parent module import OR leave it alone
+    // since `stdout` is already available.
+    let input = r#"
+use std::io::{self, ErrorKind};
+use io::stdout;
+
+fn main() {
+    io::stdin();
+    io::stdout();
+}
+"#;
+    let output = process_source(input, &[]);
+    println!("Output:\n{output}");
+    // Should add import for stdin
+    assert!(
+        output.contains("use std::io::stdin;"),
+        "Should have `use std::io::stdin;`, got:\n{output}"
+    );
+    // io::stdout() should be rewritten to just stdout() since it's already imported
+    // OR it could be kept as io::stdout() if there's a conflict resolution issue
+    // The key is we shouldn't add a duplicate import for stdout
+    let stdout_import_count = output.matches("use std::io::stdout;").count()
+        + output.matches("use io::stdout;").count();
+    assert!(
+        stdout_import_count <= 1,
+        "Should not have duplicate stdout imports, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_naturalize_example_scenario() {
+    // This replicates the exact structure of examples/naturalize.rs
+    let input = r#"
+use std::{
+    io::{self, ErrorKind, IsTerminal, Write},
+    process::{Command, Stdio},
+    sync::LazyLock,
+    time::Duration,
+};
+
+use io::stdout;
+
+fn spinner() {
+    if !io::stdin().is_terminal() {
+        return;
+    }
+}
+
+fn print(s: &str) {
+    if let Err(e) = writeln!(io::stdout(), "{s}") {}
+}
+"#;
+    let output = process_source(input, &[]);
+    println!("Input:\n{input}");
+    println!("Output:\n{output}");
+    // io::stdin() should be dequalified
+    assert!(
+        output.contains("use std::io::stdin;"),
+        "Should have `use std::io::stdin;`, got:\n{output}"
+    );
+}
