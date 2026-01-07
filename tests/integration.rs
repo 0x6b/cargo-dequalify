@@ -1389,3 +1389,33 @@ fn main() {
         "Should rewrite io::stdout() to stdout(), got:\n{output}"
     );
 }
+
+#[test]
+fn test_format_macro_args() {
+    // Qualified paths inside format macros should be detected and rewritten
+    let input = r#"
+use std::io::{self, stdin};
+use io::stdout;
+
+fn main() {
+    println!("{:?}", io::stdout().is_terminal());
+    eprintln!("{}", std::env::var("HOME").unwrap());
+}
+"#;
+    let output = process_source(input, &[]);
+    println!("Output:\n{output}");
+    // io::stdout() inside println! should be rewritten to stdout()
+    assert!(
+        output.contains("println!(\"{:?}\", stdout().is_terminal())"),
+        "Should rewrite io::stdout() to stdout() inside println!, got:\n{output}"
+    );
+    // std::env::var should be rewritten
+    assert!(
+        output.contains("use std::env::var;"),
+        "Should add use std::env::var, got:\n{output}"
+    );
+    assert!(
+        output.contains("var(\"HOME\")"),
+        "Should rewrite std::env::var to var, got:\n{output}"
+    );
+}

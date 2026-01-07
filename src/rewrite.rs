@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use similar::{ChangeTag, TextDiff};
 use syn::{
-    Attribute, ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn,
+    Attribute, Expr, ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn,
     ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local,
     Macro, Pat, PatIdent, Path as SynPath, TypePath, UseTree, parse_file,
     spanned::Spanned,
@@ -59,6 +59,29 @@ const PRELUDE_TYPES: &[&str] = &[
     "String",
     // std::vec
     "Vec",
+];
+
+/// Format-like macros whose arguments should be parsed for qualified paths.
+/// These macros follow the pattern: macro!("format string", arg1, arg2, ...)
+const FORMAT_MACROS: &[&str] = &[
+    "println",
+    "print",
+    "eprintln",
+    "eprint",
+    "format",
+    "format_args",
+    "write",
+    "writeln",
+    "panic",
+    "unreachable",
+    "todo",
+    "unimplemented",
+    // tracing/log macros
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "error",
 ];
 
 // A single occurrence of a path in the source that needs rewriting.
@@ -178,6 +201,26 @@ impl<'a> PathCollector<'a> {
                 format!("{base_path}::{}", remaining_segments.join("::"))
             })
         })
+    }
+
+    /// Parse and visit arguments of format-like macros (println!, format!, etc.)
+    /// These macros have syntax: macro!("format string", arg1, arg2, ...)
+    /// We try to parse each argument after the format string as an expression.
+    fn visit_format_macro_args(&mut self, node: &Macro) {
+        use syn::parse::Parser;
+        use syn::punctuated::Punctuated;
+        use syn::Token;
+
+        // Parse the macro tokens as comma-separated expressions
+        let parser = Punctuated::<Expr, Token![,]>::parse_terminated;
+        let Ok(args) = parser.parse2(node.tokens.clone()) else {
+            return;
+        };
+
+        // Skip the first argument (format string) and visit the rest
+        for arg in args.into_iter().skip(1) {
+            self.visit_expr(&arg);
+        }
     }
 }
 
@@ -424,6 +467,15 @@ impl Visit<'_> for PathCollector<'_> {
                 });
             }
         }
+
+        // Handle format-like macros: parse their arguments for qualified paths
+        if segments.len() == 1 {
+            let macro_name = segments[0].ident.to_string();
+            if FORMAT_MACROS.contains(&macro_name.as_str()) {
+                self.visit_format_macro_args(node);
+            }
+        }
+
         visit::visit_macro(self, node);
     }
 
