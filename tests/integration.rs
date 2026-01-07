@@ -1334,3 +1334,58 @@ fn print(s: &str) {
         "Should have `use std::io::stdin;`, got:\n{output}"
     );
 }
+
+#[test]
+fn test_qualified_path_with_existing_matching_import() {
+    // When `stdout` is already imported via chained import `use io::stdout;`,
+    // and we call `io::stdout()`, it should be rewritten to `stdout()`
+    // WITHOUT adding a new import (since the existing import already covers it).
+    let input = r#"
+use std::io::{self, stdin};
+use io::stdout;
+
+fn main() {
+    stdin();
+    io::stdout();
+}
+"#;
+    let output = process_source(input, &[]);
+    println!("Output:\n{output}");
+    // io::stdout() should be rewritten to stdout()
+    assert!(
+        output.contains("stdout()") && !output.contains("io::stdout()"),
+        "Should rewrite io::stdout() to stdout(), got:\n{output}"
+    );
+    // Should NOT add another import for stdout (already imported)
+    assert!(
+        !output.contains("use std::io::stdout;"),
+        "Should NOT add duplicate import for stdout, got:\n{output}"
+    );
+    // Original import should remain
+    assert!(
+        output.contains("use io::stdout;"),
+        "Should keep original chained import, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_simple_example_scenario() {
+    // Simpler version without macros (macros don't get parsed by syn)
+    let input = r#"
+use io::IsTerminal;
+use io::stdout;
+use std::io::{self, stdin};
+
+fn main() {
+    let _ = stdin().is_terminal();
+    let _ = io::stdout().is_terminal();
+}
+"#;
+    let output = process_source(input, &[]);
+    println!("Output:\n{output}");
+    // io::stdout() should be rewritten to stdout()
+    assert!(
+        output.contains("stdout().is_terminal()") && !output.contains("io::stdout()"),
+        "Should rewrite io::stdout() to stdout(), got:\n{output}"
+    );
+}
