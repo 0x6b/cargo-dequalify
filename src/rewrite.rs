@@ -506,6 +506,8 @@ struct ImportStrategy {
     full_path: String,
     segments: Vec<String>,
     import_len: usize,
+    /// If true, the import already exists (no need to add use statement)
+    already_imported: bool,
 }
 
 impl ImportStrategy {
@@ -516,6 +518,7 @@ impl ImportStrategy {
             full_path: full_path.to_string(),
             segments,
             import_len,
+            already_imported: false,
         }
     }
 
@@ -539,9 +542,13 @@ impl ImportStrategy {
         self.import_len == 1
     }
 
-    /// Generate use statement
-    fn use_statement(&self) -> String {
-        format!("use {};", self.segments[..self.import_len].join("::"))
+    /// Generate use statement (returns None if already imported)
+    fn use_statement(&self) -> Option<String> {
+        if self.already_imported {
+            None
+        } else {
+            Some(format!("use {};", self.segments[..self.import_len].join("::")))
+        }
     }
 
     /// Generate call replacement text
@@ -562,20 +569,36 @@ impl ImportStrategy {
 
 /// Multi-pass conflict resolution.
 /// Groups paths by their import identifier and bumps conflicting groups up one level.
+/// `import_mappings` maps imported names to their full paths, used to detect when
+/// an existing import already covers the path we want.
 fn resolve_all_imports(
     paths: &[String],
     existing_idents: &BTreeSet<String>,
+    import_mappings: &BTreeMap<String, String>,
 ) -> BTreeMap<String, ImportStrategy> {
     let mut strategies: Vec<ImportStrategy> =
         paths.iter().map(|p| ImportStrategy::new(p)).collect();
 
+    // Phase 0: Check if any paths are already covered by existing imports
+    // e.g., if `stdout` maps to `std::io::stdout` and we have path `std::io::stdout`,
+    // mark it as already imported
+    for strategy in &mut strategies {
+        let short_name = strategy.segments.last().unwrap();
+        if let Some(mapped_path) = import_mappings.get(short_name) {
+            if mapped_path == &strategy.full_path {
+                // This path is already fully covered by an existing import
+                strategy.already_imported = true;
+            }
+        }
+    }
+
     // Phase 1: Resolve conflicts between new imports
     // Keep bumping until no more internal conflicts
     loop {
-        // Group by import_ident (only for paths that aren't at same-as-original level)
+        // Group by import_ident (only for paths that aren't at same-as-original level and not already imported)
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (idx, strategy) in strategies.iter().enumerate() {
-            if !strategy.is_same_as_original() {
+            if !strategy.is_same_as_original() && !strategy.already_imported {
                 groups
                     .entry(strategy.import_ident().to_string())
                     .or_default()
@@ -602,10 +625,12 @@ fn resolve_all_imports(
     }
 
     // Phase 2: Handle conflicts with existing idents by going up levels
+    // Skip paths that are already imported (they don't need a new import)
     loop {
         let mut has_conflict = false;
         for strategy in &mut strategies {
             if !strategy.is_same_as_original()
+                && !strategy.already_imported
                 && existing_idents.contains(strategy.import_ident())
                 && strategy.go_up()
             {
@@ -686,6 +711,39 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
 
     collector.visit_file(&ast);
 
+    // Re-normalize import mappings to handle chained imports in any order.
+    // e.g., if `use io::stdout;` comes before `use std::io::{self, ...};`,
+    // the initial mapping might be `stdout` → `io::stdout` instead of `std::io::stdout`.
+    // This pass ensures all mappings are fully resolved.
+    // Limit iterations to prevent infinite loops in case of circular references.
+    for _ in 0..10 {
+        let mut changed = false;
+        let mappings_snapshot = collector.import_mappings.clone();
+        for (_, full_path) in collector.import_mappings.iter_mut() {
+            let normalized = normalize_path(full_path.clone(), &mappings_snapshot);
+            if &normalized != full_path {
+                *full_path = normalized;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Also re-normalize collected paths and occurrences using the updated mappings.
+    // This handles cases where a path like `io::stdout` was collected before `io` was mapped.
+    let mut normalized_paths: BTreeSet<String> = BTreeSet::new();
+    for path in &collector.paths {
+        let normalized = normalize_path(path.clone(), &collector.import_mappings);
+        normalized_paths.insert(normalized);
+    }
+    collector.paths = normalized_paths;
+
+    for occ in &mut collector.occurrences {
+        occ.full_path_str = normalize_path(occ.full_path_str.clone(), &collector.import_mappings);
+    }
+
     if collector.paths.is_empty() {
         return Ok(None);
     }
@@ -723,7 +781,8 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         let scope_paths_vec: Vec<String> = scope_paths.iter().map(|&s| s.to_owned()).collect();
 
         // Resolve imports for this scope
-        let strategies = resolve_all_imports(&scope_paths_vec, &existing_idents);
+        let strategies =
+            resolve_all_imports(&scope_paths_vec, &existing_idents, &collector.import_mappings);
 
         // Build use statements grouped by cfg attributes
         // Key: sorted cfg attrs joined (empty string for no cfg)
@@ -735,9 +794,10 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
                 continue;
             };
 
-            // Add use statement to appropriate cfg group
-            let use_stmt = strategy.use_statement();
-            use_by_cfg.entry(occ.cfg_attrs.clone()).or_default().insert(use_stmt);
+            // Add use statement to appropriate cfg group (if not already imported)
+            if let Some(use_stmt) = strategy.use_statement() {
+                use_by_cfg.entry(occ.cfg_attrs.clone()).or_default().insert(use_stmt);
+            }
 
             // Create replacement for this occurrence
             let start_byte = line_offsets.line_col_to_byte(occ.start_line, occ.start_col);
@@ -965,10 +1025,17 @@ fn is_internal_use_tree(tree: &UseTree) -> bool {
 
 /// Normalize a path by resolving its first segment through existing mappings.
 /// e.g., if `io` maps to `std::io`, then `io::stdout` becomes `std::io::stdout`.
+/// Avoids self-referential expansion (e.g., `anyhow` mapping to `anyhow::anyhow`).
 fn normalize_path(full: String, mappings: &BTreeMap<String, String>) -> String {
     let segments: Vec<&str> = full.split("::").collect();
     if let Some(&first) = segments.first() {
         if let Some(base) = mappings.get(first) {
+            // Avoid self-referential expansion: if the base path starts with the same
+            // segment we're trying to expand, don't expand (e.g., `anyhow` -> `anyhow::anyhow`)
+            let base_first = base.split("::").next().unwrap_or("");
+            if base_first == first {
+                return full;
+            }
             let mut new_segments: Vec<&str> = base.split("::").collect();
             new_segments.extend(segments.iter().skip(1));
             return new_segments.join("::");
