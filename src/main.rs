@@ -3,19 +3,14 @@ mod rewrite;
 use std::{
     env::args,
     ffi::OsStr,
-    fs,
+    fs::read_to_string,
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
 };
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use dunce::canonicalize;
-use fs::read_to_string;
 use gix::discover;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
@@ -23,21 +18,9 @@ use rewrite::process_file;
 use serde::Deserialize;
 use toml::from_str;
 
-/// cargo-dequalify
-///
-/// Rewrite fully-qualified function calls into imported short names.
-///
-/// Examples:
-///   cargo dequalify
-///   cargo dequalify -w
-///
-/// By default:
-///   - Runs on the current workspace (or single crate)
-///   - Uses dry-run mode (use -w to write changes)
-///   - On conflict, imports the parent module instead (e.g., `tokio::task::spawn` → use
-///     `tokio::task`; `task::spawn()`)
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
+/// Rewrite fully-qualified function calls into imported short names.
 struct Cli {
     /// Optional path to a package or workspace root. Defaults to current dir.
     #[arg(value_name = "PATH", default_value = ".")]
@@ -61,31 +44,21 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    // Normalize args so it works both as:
-    //   - cargo dequalify
-    //   - cargo-dequalify (called directly)
     let mut raw_args: Vec<String> = args().collect();
-
-    // raw_args[0] = "cargo-dequalify" (binary name)
-    // raw_args[1] might be "dequalify" when invoked as `cargo dequalify`
-    if raw_args.get(1).map(String::as_str) == Some("dequalify") {
-        // Remove the cargo-injected subcommand name
+    if raw_args.get(1).is_some_and(|s| s == "dequalify") {
         raw_args.remove(1);
     }
-
     let cli = Cli::parse_from(&raw_args);
 
     let root = canonicalize(&cli.target)
         .with_context(|| format!("failed to canonicalize path {}", cli.target.display()))?;
 
-    // Find Cargo.toml starting from the target path (walk up)
-    let cargo_toml_path = find_cargo_toml(&root)
+    let cargo_toml = find_cargo_toml(&root)
         .with_context(|| format!("failed to find Cargo.toml starting from {}", root.display()))?;
 
-    let workspace = load_workspace(&cargo_toml_path)
-        .with_context(|| format!("failed to load workspace from {}", cargo_toml_path.display()))?;
+    let workspace = load_workspace(&cargo_toml)
+        .with_context(|| format!("failed to load workspace from {}", cargo_toml.display()))?;
 
-    // Check for dirty git working directory when --write is used
     if cli.write && !cli.allow_dirty && is_git_dirty(&root) {
         bail!(
             "working directory has uncommitted changes, \
@@ -94,69 +67,54 @@ fn main() -> Result<()> {
         );
     }
 
-    let mut crate_roots = workspace_crate_roots(&cargo_toml_path, &workspace);
+    let crate_roots = workspace_crate_roots(&cargo_toml, &workspace);
 
-    if crate_roots.is_empty() {
-        // Fall back to treating the directory with Cargo.toml as a single crate.
-        let crate_root = cargo_toml_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        crate_roots.push(crate_root);
-    }
+    let rs_files: Vec<PathBuf> = crate_roots
+        .iter()
+        .flat_map(|root| {
+            WalkBuilder::new(root)
+                .standard_filters(true)
+                .hidden(false)
+                .follow_links(false)
+                .build()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().is_file() && e.path().extension() == Some(OsStr::new("rs")))
+                .map(|e| e.into_path())
+        })
+        .collect();
 
-    // Collect all .rs files from all crates
-    let mut rs_files: Vec<PathBuf> = Vec::new();
-    for crate_root in &crate_roots {
-        let walker = WalkBuilder::new(crate_root)
-            .standard_filters(true)
-            .hidden(false)
-            .follow_links(false)
-            .build();
-
-        for entry in walker.filter_map(std::result::Result::ok) {
-            let path = entry.path();
-            if path.is_file() && path.extension() == Some(OsStr::new("rs")) {
-                rs_files.push(path.to_path_buf());
-            }
-        }
-    }
-
-    let any_changes = AtomicBool::new(false);
-    let diffs: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
-
-    // Process all files in parallel
-    rs_files
+    let results: Vec<_> = rs_files
         .par_iter()
-        .for_each(|path| match process_file(path, &cli.ignore_roots, !cli.write) {
-            Ok(Some(diff)) => {
-                any_changes.store(true, Ordering::Relaxed);
-                if !diff.is_empty() {
-                    diffs.lock().unwrap().push((path.clone(), diff));
-                }
-            }
-            Ok(None) => {}
-            Err(e) => eprintln!("error processing {}: {e}", path.display()),
-        });
+        .map(|path| (path.clone(), process_file(path, &cli.ignore_roots, !cli.write)))
+        .collect();
 
-    // Print diffs sorted by path (deterministic output)
-    let mut diffs = diffs.into_inner().unwrap();
+    let mut diffs: Vec<_> = results
+        .iter()
+        .filter_map(|(path, res)| match res {
+            Ok(Some(diff)) if !diff.is_empty() => Some((path.clone(), diff.clone())),
+            Err(e) => {
+                eprintln!("error processing {}: {e}", path.display());
+                None
+            }
+            _ => None,
+        })
+        .collect();
     diffs.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, diff) in diffs {
+
+    for (_, diff) in &diffs {
         print!("{diff}");
     }
 
-    let any_changes = any_changes.load(Ordering::Relaxed);
+    let any_changes = results.iter().any(|(_, r)| matches!(r, Ok(Some(_))));
 
     if any_changes && !cli.write {
         eprintln!("# Run with `-w` to apply changes, or `-w -f` to also format.");
     }
 
-    if any_changes
-        && cli.write
-        && let Some(toolchain) = &cli.fmt
-    {
-        run_cargo_fmt(toolchain.as_deref())?;
+    if any_changes && cli.write {
+        if let Some(toolchain) = &cli.fmt {
+            run_cargo_fmt(toolchain.as_deref())?;
+        }
     }
 
     Ok(())
@@ -176,24 +134,13 @@ fn run_cargo_fmt(toolchain: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Check if the git working directory is dirty (has uncommitted changes).
 fn is_git_dirty(path: &Path) -> bool {
-    let Ok(repo) = discover(path) else {
-        return false; // Not a git repo
-    };
-
-    let Ok(platform) = repo.status(gix::progress::Discard) else {
-        return false;
-    };
-
-    let Ok(iter) = platform.into_index_worktree_iter(None) else {
-        return false;
-    };
-
+    let Ok(repo) = discover(path) else { return false };
+    let Ok(platform) = repo.status(gix::progress::Discard) else { return false };
+    let Ok(iter) = platform.into_index_worktree_iter(None) else { return false };
     iter.take(1).count() > 0
 }
 
-/// Represents just enough of Cargo.toml for our purposes.
 #[derive(Debug, Deserialize)]
 struct CargoWorkspaceToml {
     workspace: Option<WorkspaceSection>,
@@ -208,37 +155,22 @@ struct WorkspaceSection {
 #[derive(Debug, Deserialize)]
 struct PackageSection {}
 
-/// Information about the workspace: where it lives and what crates it contains.
 #[derive(Debug)]
 struct WorkspaceInfo {
-    /// True if this is a virtual workspace (no [package] at root)
     virtual_root: bool,
-    /// Members as relative paths from workspace root.
     members: Vec<String>,
 }
 
-/// Walk up from `start` to find a Cargo.toml.
 fn find_cargo_toml(start: &Path) -> Result<PathBuf> {
-    let mut dir = start;
-
-    loop {
+    for dir in start.ancestors() {
         let candidate = dir.join("Cargo.toml");
         if candidate.is_file() {
             return Ok(candidate);
         }
-
-        match dir.parent() {
-            Some(parent) => {
-                dir = parent;
-            }
-            None => break,
-        }
     }
-
     bail!("Cargo.toml not found");
 }
 
-/// Load workspace / package info from Cargo.toml.
 fn load_workspace(cargo_toml: &Path) -> Result<WorkspaceInfo> {
     let content = read_to_string(cargo_toml)
         .with_context(|| format!("failed to read {}", cargo_toml.display()))?;
@@ -246,36 +178,24 @@ fn load_workspace(cargo_toml: &Path) -> Result<WorkspaceInfo> {
         .with_context(|| format!("failed to parse TOML {}", cargo_toml.display()))?;
 
     let virtual_root = parsed.package.is_none();
-
-    let members = if let Some(ws) = parsed.workspace {
-        let mut m = ws.members.unwrap_or_default();
-        // If default-members specified, you might want to use them instead;
-        // for now we'll just use members.
-        m.sort();
-        m.dedup();
-        m
-    } else if !virtual_root {
-        // Non-workspace single crate: no members; will be handled as root crate.
-        Vec::new()
-    } else {
-        Vec::new()
-    };
+    let mut members = parsed
+        .workspace
+        .and_then(|ws| ws.members)
+        .unwrap_or_default();
+    members.sort();
+    members.dedup();
 
     Ok(WorkspaceInfo { virtual_root, members })
 }
 
-/// Resolve crate roots from workspace info.
 fn workspace_crate_roots(cargo_toml: &Path, ws: &WorkspaceInfo) -> Vec<PathBuf> {
-    let root_dir = cargo_toml.parent().unwrap_or_else(|| Path::new("."));
-    let mut roots = Vec::new();
+    let root_dir = cargo_toml.parent().unwrap_or(Path::new("."));
 
-    // If there are explicit members, use them.
-    for member in &ws.members {
-        roots.push(root_dir.join(member));
-    }
-
-    // If root is a non-virtual crate (has [package]), include it as well.
+    let mut roots: Vec<PathBuf> = ws.members.iter().map(|m| root_dir.join(m)).collect();
     if !ws.virtual_root {
+        roots.push(root_dir.to_path_buf());
+    }
+    if roots.is_empty() {
         roots.push(root_dir.to_path_buf());
     }
 
