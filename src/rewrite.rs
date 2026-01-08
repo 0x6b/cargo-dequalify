@@ -10,16 +10,12 @@ use similar::{ChangeTag, TextDiff};
 use syn::{
     Attribute, Expr, ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn,
     ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local,
-    Macro, Pat, PatIdent, Path as SynPath, TypePath, UseTree, parse_file,
+    Macro, Pat, Path as SynPath, TypePath, UseTree, parse_file,
     spanned::Spanned,
     visit::{
         Visit, {self},
     },
-    visit_mut::{
-        VisitMut, {self},
-    },
 };
-use visit_mut::{visit_local_mut, visit_pat_ident_mut};
 
 /// Extract #[cfg(...)] attributes from an attribute list.
 /// Returns a vector of cfg attribute strings (e.g., ["cfg(test)", "cfg(unix)"]).
@@ -98,6 +94,9 @@ struct PathOccurrence {
     /// Multiple cfg attributes are combined (all must be satisfied).
     /// Empty means no cfg restriction.
     cfg_attrs: Vec<String>,
+    /// Local variable bindings that are in scope at this occurrence.
+    /// These would shadow any imported name with the same identifier.
+    local_bindings: BTreeSet<String>,
 }
 
 /// Information about a scope (file level or module) for use statement insertion.
@@ -136,6 +135,10 @@ struct PathCollector<'a> {
     /// Stack of #[cfg(...)] attributes currently in scope.
     /// Each entry is the string representation of a cfg attribute (e.g., "cfg(test)").
     cfg_stack: Vec<String>,
+    /// Stack of local variable bindings in the current lexical scope.
+    /// Each entry in the outer Vec represents a scope level (function, block, etc.).
+    /// Inner BTreeSet contains the identifiers bound at that level.
+    local_binding_stack: Vec<BTreeSet<String>>,
 }
 
 impl<'a> PathCollector<'a> {
@@ -151,6 +154,7 @@ impl<'a> PathCollector<'a> {
             locally_imported_internal_names: BTreeSet::new(),
             block_depth: 0,
             cfg_stack: Vec::new(),
+            local_binding_stack: Vec::new(),
         }
     }
 
@@ -175,6 +179,18 @@ impl<'a> PathCollector<'a> {
     /// Get the current scope as a string (e.g., "" for file level, "tests" for mod tests)
     fn current_scope(&self) -> String {
         self.scope_stack.join("::")
+    }
+
+    /// Get all local bindings currently in scope (flattened from the stack).
+    fn current_local_bindings(&self) -> BTreeSet<String> {
+        self.local_binding_stack.iter().flat_map(|s| s.iter().cloned()).collect()
+    }
+
+    /// Add a local binding to the current scope level.
+    fn add_local_binding(&mut self, name: String) {
+        if let Some(current) = self.local_binding_stack.last_mut() {
+            current.insert(name);
+        }
     }
 
     /// Try to expand a path using import mappings.
@@ -246,7 +262,19 @@ impl Visit<'_> for PathCollector<'_> {
         let cfg_count = cfg_attrs.len();
         self.cfg_stack.extend(cfg_attrs);
         self.block_depth += 1;
+
+        // Push new scope for local bindings and collect function parameters
+        let mut bindings = BTreeSet::new();
+        for input in &node.sig.inputs {
+            if let syn::FnArg::Typed(pat_ty) = input {
+                collect_pattern_idents(&pat_ty.pat, &mut bindings);
+            }
+        }
+        self.local_binding_stack.push(bindings);
+
         visit::visit_item_fn(self, node);
+
+        self.local_binding_stack.pop();
         self.block_depth -= 1;
         self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
@@ -257,7 +285,19 @@ impl Visit<'_> for PathCollector<'_> {
         let cfg_count = cfg_attrs.len();
         self.cfg_stack.extend(cfg_attrs);
         self.block_depth += 1;
+
+        // Push new scope for local bindings and collect function parameters
+        let mut bindings = BTreeSet::new();
+        for input in &node.sig.inputs {
+            if let syn::FnArg::Typed(pat_ty) = input {
+                collect_pattern_idents(&pat_ty.pat, &mut bindings);
+            }
+        }
+        self.local_binding_stack.push(bindings);
+
         visit::visit_impl_item_fn(self, node);
+
+        self.local_binding_stack.pop();
         self.block_depth -= 1;
         self.cfg_stack.truncate(self.cfg_stack.len() - cfg_count);
     }
@@ -265,8 +305,39 @@ impl Visit<'_> for PathCollector<'_> {
     // Track when entering closures
     fn visit_expr_closure(&mut self, node: &ExprClosure) {
         self.block_depth += 1;
+
+        // Push new scope for local bindings and collect closure parameters
+        let mut bindings = BTreeSet::new();
+        for input in &node.inputs {
+            collect_pattern_idents(input, &mut bindings);
+        }
+        self.local_binding_stack.push(bindings);
+
         visit::visit_expr_closure(self, node);
+
+        self.local_binding_stack.pop();
         self.block_depth -= 1;
+    }
+
+    // Collect local bindings from let statements
+    fn visit_local(&mut self, node: &Local) {
+        // First visit the initializer (before the binding is in scope)
+        if let Some(init) = &node.init {
+            self.visit_expr(&init.expr);
+            if let Some((_, else_branch)) = &init.diverge {
+                self.visit_expr(else_branch);
+            }
+        }
+
+        // Now collect the binding pattern into current scope
+        let mut bindings = BTreeSet::new();
+        collect_pattern_idents(&node.pat, &mut bindings);
+        for name in bindings {
+            self.add_local_binding(name);
+        }
+
+        // Visit the pattern (for any nested paths in patterns)
+        visit::visit_pat(self, &node.pat);
     }
 
     // Track cfg attributes on impl blocks
@@ -348,6 +419,7 @@ impl Visit<'_> for PathCollector<'_> {
                         end_col: end.column,
                         scope: self.current_scope(),
                         cfg_attrs: self.current_cfg_attrs(),
+                        local_bindings: self.current_local_bindings(),
                     });
                 }
             }
@@ -464,6 +536,7 @@ impl Visit<'_> for PathCollector<'_> {
                     end_col: end.column,
                     scope: self.current_scope(),
                     cfg_attrs: self.current_cfg_attrs(),
+                    local_bindings: self.current_local_bindings(),
                 });
             }
         }
@@ -539,6 +612,7 @@ impl Visit<'_> for PathCollector<'_> {
                     end_col: end.column,
                     scope: self.current_scope(),
                     cfg_attrs: self.current_cfg_attrs(),
+                    local_bindings: self.current_local_bindings(),
                 });
             }
         }
@@ -800,8 +874,8 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         return Ok(None);
     }
 
-    let local_idents = collect_local_idents(&ast);
     let used_prelude_types = collect_unqualified_prelude_usages(&ast);
+    let file_level_defs = collect_file_level_definitions(&ast);
 
     // Group occurrences by scope
     let mut occ_by_scope: BTreeMap<&str, Vec<&PathOccurrence>> = BTreeMap::new();
@@ -822,10 +896,17 @@ pub fn process_file(path: &Path, ignore_roots: &[String], dry_run: bool) -> Resu
         // Combine file-level imports with scope-specific imports for conflict detection
         let mut existing_idents: BTreeSet<String> = file_level_imported.clone();
         existing_idents.extend(scope_info.imported_idents.clone());
-        existing_idents.extend(local_idents.clone());
         // Add prelude types that are actually used unqualified to prevent shadowing
         // (e.g., if `Result<T, E>` is used, we won't import `std::fmt::Result`)
         existing_idents.extend(used_prelude_types.clone());
+        // Add file-level definitions (functions, structs, etc.) that would conflict
+        existing_idents.extend(file_level_defs.clone());
+        // Add local bindings from all occurrences in this scope.
+        // This ensures that if any occurrence has a local binding that would shadow
+        // an import, the strategy resolution will "bump up" to import the parent module.
+        for occ in occurrences.iter() {
+            existing_idents.extend(occ.local_bindings.clone());
+        }
 
         // Collect unique paths in this scope
         let scope_paths: BTreeSet<&str> =
@@ -1156,18 +1237,15 @@ fn collect_use_mappings(tree: &UseTree, prefix: &[String], out: &mut BTreeMap<St
     }
 }
 
-// Collect local identifiers in the file to detect potential conflicts.
-fn collect_local_idents(ast: &File) -> BTreeSet<String> {
+/// Collect file-level definitions that would conflict with imports.
+/// This includes function names, struct/enum/union/trait/type names, and const/static names.
+/// These are global within the file and would shadow any imported name.
+fn collect_file_level_definitions(ast: &File) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     for item in &ast.items {
         match item {
             Item::Fn(ItemFn { sig, .. }) => {
                 set.insert(sig.ident.to_string());
-                for input in &sig.inputs {
-                    if let syn::FnArg::Typed(pat_ty) = input {
-                        collect_pattern_idents(&pat_ty.pat, &mut set);
-                    }
-                }
             }
             Item::Struct(ItemStruct { ident, .. })
             | Item::Enum(ItemEnum { ident, .. })
@@ -1190,22 +1268,6 @@ fn collect_local_idents(ast: &File) -> BTreeSet<String> {
             _ => {}
         }
     }
-    struct LocalBindingCollector<'a> {
-        set: &'a mut BTreeSet<String>,
-    }
-    impl VisitMut for LocalBindingCollector<'_> {
-        fn visit_local_mut(&mut self, node: &mut Local) {
-            collect_pattern_idents(&node.pat, self.set);
-            visit_local_mut(self, node);
-        }
-        fn visit_pat_ident_mut(&mut self, node: &mut PatIdent) {
-            self.set.insert(node.ident.to_string());
-            visit_pat_ident_mut(self, node);
-        }
-    }
-    let mut ast_clone = ast.clone();
-    let mut collector = LocalBindingCollector { set: &mut set };
-    collector.visit_file_mut(&mut ast_clone);
     set
 }
 
