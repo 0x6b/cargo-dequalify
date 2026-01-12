@@ -64,7 +64,7 @@ struct Collector<'a> {
     mappings: BTreeMap<String, String>,
     internal: BTreeSet<String>,
     depth: usize,
-    cfg: Vec<String>,
+    cfg: BTreeSet<String>,
 }
 
 fn path_byte_span(path: &SynPath, lines: &Lines) -> Option<(usize, usize)> {
@@ -86,15 +86,12 @@ impl<'a> Collector<'a> {
             mappings: BTreeMap::new(),
             internal: BTreeSet::new(),
             depth: 0,
-            cfg: Vec::new(),
+            cfg: BTreeSet::new(),
         }
     }
 
     fn cur_cfg(&self) -> Vec<String> {
-        let mut c = self.cfg.clone();
-        c.sort();
-        c.dedup();
-        c
+        self.cfg.iter().cloned().collect()
     }
     fn cur_scope(&self) -> String {
         self.scope.join("::")
@@ -116,10 +113,11 @@ impl<'a> Collector<'a> {
 
     fn with_cfg<F: FnOnce(&mut Self)>(&mut self, attrs: &[Attribute], f: F) {
         let cfgs = extract_cfg(attrs);
-        let n = cfgs.len();
-        self.cfg.extend(cfgs);
+        let added: Vec<_> = cfgs.into_iter().filter(|c| self.cfg.insert(c.clone())).collect();
         f(self);
-        self.cfg.truncate(self.cfg.len() - n);
+        for c in added {
+            self.cfg.remove(&c);
+        }
     }
 
     fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
