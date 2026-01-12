@@ -119,8 +119,8 @@ fn run_cargo_fmt(tc: Option<&str>) -> Result<()> {
 fn is_git_dirty(path: &Path) -> bool {
     let Ok(repo) = discover(path) else { return false };
     let Ok(platform) = repo.status(gix::progress::Discard) else { return false };
-    let Ok(iter) = platform.into_index_worktree_iter(None) else { return false };
-    iter.take(1).count() > 0
+    let Ok(mut iter) = platform.into_index_worktree_iter(None) else { return false };
+    iter.next().is_some()
 }
 
 #[derive(Deserialize)]
@@ -156,12 +156,11 @@ fn workspace_crate_roots(
     virtual_root: bool,
     members: &[String],
 ) -> Vec<PathBuf> {
+    use std::collections::BTreeSet;
     let root = cargo_toml.parent().unwrap_or(Path::new("."));
-    let mut roots: Vec<PathBuf> = members.iter().map(|m| root.join(m)).collect();
+    let mut roots: BTreeSet<PathBuf> = members.iter().map(|m| root.join(m)).collect();
     if !virtual_root || roots.is_empty() {
-        roots.push(root.to_path_buf());
+        roots.insert(root.to_path_buf());
     }
-    roots.sort();
-    roots.dedup();
-    roots
+    roots.into_iter().collect()
 }
