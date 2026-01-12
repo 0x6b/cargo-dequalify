@@ -454,22 +454,13 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
     );
     c.visit_file(&ast);
 
-    for _ in 0..10 {
-        let snap = c.mappings.clone();
-        let mut ch = false;
-        for v in c.mappings.values_mut() {
-            let n = normalize(v.clone(), &snap);
-            if &n != v {
-                *v = n;
-                ch = true;
-            }
-        }
-        if !ch {
-            break;
-        }
+    let mut cache = BTreeMap::new();
+    let mappings_snap = c.mappings.clone();
+    for v in c.mappings.values_mut() {
+        *v = resolve_path(v, &mappings_snap, &mut cache, 0);
     }
     for o in &mut c.occs {
-        o.path = normalize(o.path.clone(), &c.mappings);
+        o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
     }
 
     if c.occs.is_empty() {
@@ -649,16 +640,37 @@ fn is_internal(tree: &UseTree) -> bool {
     }
 }
 
-fn normalize(full: String, m: &BTreeMap<String, String>) -> String {
-    let segs: Vec<&str> = full.split("::").collect();
-    if let Some(base) = segs.first().and_then(|f| m.get(*f))
-        && base.split("::").next().unwrap_or("") != *segs.first().unwrap()
-    {
-        let mut n: Vec<&str> = base.split("::").collect();
-        n.extend(segs.iter().skip(1));
-        return n.join("::");
+fn resolve_path(
+    path: &str,
+    mappings: &BTreeMap<String, String>,
+    cache: &mut BTreeMap<String, String>,
+    depth: usize,
+) -> String {
+    if depth > 20 {
+        return path.to_string(); // cycle protection
     }
-    full
+    if let Some(resolved) = cache.get(path) {
+        return resolved.clone();
+    }
+
+    let segs: Vec<&str> = path.split("::").collect();
+    let first = segs.first().copied().unwrap_or("");
+
+    let result = if let Some(base) = mappings.get(first) {
+        if base.split("::").next().unwrap_or("") != first {
+            let resolved_base = resolve_path(base, mappings, cache, depth + 1);
+            let mut n: Vec<&str> = resolved_base.split("::").collect();
+            n.extend(segs.iter().skip(1));
+            n.join("::")
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    cache.insert(path.to_string(), result.clone());
+    result
 }
 
 fn collect_mappings(tree: &UseTree, prefix: &[String], out: &mut BTreeMap<String, String>) {
@@ -667,22 +679,22 @@ fn collect_mappings(tree: &UseTree, prefix: &[String], out: &mut BTreeMap<String
             let name = n.ident.to_string();
             if name == "self" {
                 if let Some(l) = prefix.last() {
-                    out.insert(l.clone(), normalize(prefix.join("::"), out));
+                    out.insert(l.clone(), prefix.join("::"));
                 }
             } else {
                 let mut p = prefix.to_vec();
                 p.push(name.clone());
-                out.insert(name, normalize(p.join("::"), out));
+                out.insert(name, p.join("::"));
             }
         }
         UseTree::Rename(r) => {
             let (alias, orig) = (r.rename.to_string(), r.ident.to_string());
             if orig == "self" {
-                out.insert(alias, normalize(prefix.join("::"), out));
+                out.insert(alias, prefix.join("::"));
             } else {
                 let mut p = prefix.to_vec();
                 p.push(orig);
-                out.insert(alias, normalize(p.join("::"), out));
+                out.insert(alias, p.join("::"));
             }
         }
         UseTree::Path(p) => {
