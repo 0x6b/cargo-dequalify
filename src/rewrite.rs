@@ -238,7 +238,16 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_item_impl(&mut self, n: &ItemImpl) {
-        self.with_cfg(&n.attrs, |s| visit::visit_item_impl(s, n));
+        self.with_cfg(&n.attrs, |s| {
+            if let Some((_, path, _)) = &n.trait_ {
+                if path.segments.len() >= 2 {
+                    let st = path.segments.first().unwrap().ident.span().start();
+                    let en = path.segments.last().unwrap().ident.span().end();
+                    s.record(path, (st.line, st.column), (en.line, en.column), true);
+                }
+            }
+            visit::visit_item_impl(s, n)
+        });
     }
 
     fn visit_expr_call(&mut self, n: &ExprCall) {

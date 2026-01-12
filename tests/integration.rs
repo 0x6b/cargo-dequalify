@@ -1412,3 +1412,32 @@ fn main() {
         "Should rewrite std::env::var to var, got:\n{output}"
     );
 }
+
+#[test]
+fn test_trait_impl_path() {
+    // Qualified trait paths in impl blocks should be dequalified
+    let input = r#"
+struct Config;
+
+impl std::str::FromStr for Config {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Config)
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use std::str::FromStr;"),
+        "Should add `use std::str::FromStr;`, got:\n{output}"
+    );
+    assert!(
+        output.contains("impl FromStr for Config"),
+        "Should rewrite `impl std::str::FromStr` to `impl FromStr`, got:\n{output}"
+    );
+    assert!(
+        !output.contains("impl std::str::FromStr"),
+        "Should not contain qualified trait path, got:\n{output}"
+    );
+}
