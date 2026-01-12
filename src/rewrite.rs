@@ -57,7 +57,6 @@ struct ScopeInfo {
 }
 
 struct Collector<'a> {
-    paths: BTreeSet<String>,
     occs: Vec<Occurrence>,
     ignore: &'a BTreeSet<String>,
     scope: Vec<String>,
@@ -81,7 +80,6 @@ fn path_span(path: &SynPath) -> Option<((usize, usize), (usize, usize))> {
 impl<'a> Collector<'a> {
     fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines) -> Self {
         Self {
-            paths: BTreeSet::new(),
             occs: Vec::new(),
             ignore,
             scope: Vec::new(),
@@ -188,7 +186,6 @@ impl<'a> Collector<'a> {
             }
         }
 
-        self.paths.insert(full.clone());
         self.occs.push(Occurrence {
             path: full,
             start,
@@ -471,12 +468,11 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
             break;
         }
     }
-    c.paths = c.paths.iter().map(|p| normalize(p.clone(), &c.mappings)).collect();
     for o in &mut c.occs {
         o.path = normalize(o.path.clone(), &c.mappings);
     }
 
-    if c.paths.is_empty() {
+    if c.occs.is_empty() {
         return Ok(None);
     }
 
