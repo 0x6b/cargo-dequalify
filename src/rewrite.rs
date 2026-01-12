@@ -512,20 +512,16 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
             }
         }
 
-        if !by_cfg.is_empty() {
-            let ind = &info.indent;
-            let mut blocks = Vec::new();
-            for (cfg, stmts) in &by_cfg {
-                if cfg.is_empty() {
-                    blocks.extend(stmts.iter().map(|s| format!("{ind}{s}")));
-                } else {
-                    let pre: String = cfg.iter().map(|c| format!("{ind}#[{c}]\n")).collect();
-                    blocks.extend(stmts.iter().map(|s| format!("{pre}{ind}{s}")));
-                }
-            }
-            if !blocks.is_empty() {
-                edits.push(Edit::Ins(info.pos, format!("\n{}\n", blocks.join("\n"))));
-            }
+        let ind = &info.indent;
+        let blocks: Vec<String> = by_cfg
+            .iter()
+            .flat_map(|(cfg, stmts)| {
+                let pre: String = cfg.iter().map(|c| format!("{ind}#[{c}]\n")).collect();
+                stmts.iter().map(move |s| format!("{pre}{ind}{s}"))
+            })
+            .collect();
+        if !blocks.is_empty() {
+            edits.push(Edit::Ins(info.pos, format!("\n{}\n", blocks.join("\n"))));
         }
     }
     edits
