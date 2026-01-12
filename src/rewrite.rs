@@ -199,7 +199,7 @@ impl<'a> Collector<'a> {
 
 impl Visit<'_> for Collector<'_> {
     fn visit_item_use(&mut self, n: &ItemUse) {
-        collect_mappings(&n.tree, &[], &mut self.mappings);
+        collect_mappings(&n.tree, &mut self.mappings);
         if self.depth > 0 && is_internal(&n.tree) {
             collect_idents(&n.tree, &mut self.internal);
         }
@@ -595,16 +595,29 @@ fn collect_file_context(ast: &File, lines: &Lines) -> (usize, BTreeSet<String>) 
     (pos, imports)
 }
 
-fn collect_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
-    collect_idents_impl(tree, None, out);
-}
-fn collect_idents_impl(tree: &UseTree, parent: Option<&str>, out: &mut BTreeSet<String>) {
+fn walk_use_tree<F: FnMut(&[String], &UseTree)>(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    f: &mut F,
+) {
     match tree {
+        UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            walk_use_tree(&p.tree, prefix, f);
+            prefix.pop();
+        }
+        UseTree::Group(g) => g.items.iter().for_each(|t| walk_use_tree(t, prefix, f)),
+        leaf => f(prefix, leaf),
+    }
+}
+
+fn collect_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
+    walk_use_tree(tree, &mut Vec::new(), &mut |prefix, leaf| match leaf {
         UseTree::Name(n) => {
             let name = n.ident.to_string();
             if name == "self" {
-                if let Some(p) = parent {
-                    out.insert(p.into());
+                if let Some(p) = prefix.last() {
+                    out.insert(p.clone());
                 }
             } else {
                 out.insert(name);
@@ -613,16 +626,8 @@ fn collect_idents_impl(tree: &UseTree, parent: Option<&str>, out: &mut BTreeSet<
         UseTree::Rename(r) => {
             out.insert(r.rename.to_string());
         }
-        UseTree::Path(p) => {
-            collect_idents_impl(&p.tree, Some(&p.ident.to_string()), out);
-        }
-        UseTree::Group(g) => {
-            for t in &g.items {
-                collect_idents_impl(t, parent, out);
-            }
-        }
-        UseTree::Glob(_) => {}
-    }
+        _ => {}
+    });
 }
 
 fn is_internal(tree: &UseTree) -> bool {
@@ -666,42 +671,35 @@ fn resolve_path(
     result
 }
 
-fn collect_mappings(tree: &UseTree, prefix: &[String], out: &mut BTreeMap<String, String>) {
-    match tree {
-        UseTree::Name(n) => {
-            let name = n.ident.to_string();
-            if name == "self" {
-                if let Some(l) = prefix.last() {
-                    out.insert(l.clone(), prefix.join("::"));
+fn collect_mappings(tree: &UseTree, out: &mut BTreeMap<String, String>) {
+    walk_use_tree(tree, &mut Vec::new(), &mut |prefix, leaf| {
+        let full = |name: &str| {
+            let mut p = prefix.to_vec();
+            p.push(name.into());
+            p.join("::")
+        };
+        match leaf {
+            UseTree::Name(n) => {
+                let name = n.ident.to_string();
+                if name == "self" {
+                    if let Some(l) = prefix.last() {
+                        out.insert(l.clone(), prefix.join("::"));
+                    }
+                } else {
+                    out.insert(name.clone(), full(&name));
                 }
-            } else {
-                let mut p = prefix.to_vec();
-                p.push(name.clone());
-                out.insert(name, p.join("::"));
             }
-        }
-        UseTree::Rename(r) => {
-            let (alias, orig) = (r.rename.to_string(), r.ident.to_string());
-            if orig == "self" {
-                out.insert(alias, prefix.join("::"));
-            } else {
-                let mut p = prefix.to_vec();
-                p.push(orig);
-                out.insert(alias, p.join("::"));
+            UseTree::Rename(r) => {
+                let (alias, orig) = (r.rename.to_string(), r.ident.to_string());
+                if orig == "self" {
+                    out.insert(alias, prefix.join("::"));
+                } else {
+                    out.insert(alias, full(&orig));
+                }
             }
+            _ => {}
         }
-        UseTree::Path(p) => {
-            let mut np = prefix.to_vec();
-            np.push(p.ident.to_string());
-            collect_mappings(&p.tree, &np, out);
-        }
-        UseTree::Group(g) => {
-            for t in &g.items {
-                collect_mappings(t, prefix, out);
-            }
-        }
-        UseTree::Glob(_) => {}
-    }
+    });
 }
 
 fn collect_defs(ast: &File) -> BTreeSet<String> {
