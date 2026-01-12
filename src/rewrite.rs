@@ -280,7 +280,8 @@ impl Visit<'_> for Collector<'_> {
                 let pos = last_use
                     .map(|l| s.lines.end(l))
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-                s.scopes.insert(scope, ScopeInfo { pos, imports, indent, locals: BTreeSet::new() });
+                s.scopes
+                    .insert(scope, ScopeInfo { pos, imports, indent, locals: BTreeSet::new() });
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
             } else {
@@ -292,9 +293,10 @@ impl Visit<'_> for Collector<'_> {
     fn visit_macro(&mut self, n: &Macro) {
         self.record_path(&n.path, false);
         let is_fmt = n.path.segments.len() == 1
-            && n.path.segments.first().is_some_and(|s| {
-                FMT_MACROS.contains(&s.ident.to_string().as_str())
-            });
+            && n.path
+                .segments
+                .first()
+                .is_some_and(|s| FMT_MACROS.contains(&s.ident.to_string().as_str()));
         if is_fmt {
             self.visit_fmt_args(n);
         }
@@ -577,11 +579,7 @@ impl Lines {
         if line == 0 || line > self.0.len() {
             return 0;
         }
-        if line < self.0.len() {
-            self.0[line] - 1
-        } else {
-            self.0[line - 1]
-        }
+        if line < self.0.len() { self.0[line] - 1 } else { self.0[line - 1] }
     }
 }
 
