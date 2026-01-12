@@ -451,11 +451,11 @@ fn collect_occurrences<'a>(
     ignore: &'a BTreeSet<String>,
 ) -> (Collector<'a>, BTreeSet<String>) {
     let mut c = Collector::new(ignore, lines);
-    let file_imports = collect_file_imports(ast);
+    let (pos, file_imports) = collect_file_context(ast, lines);
     c.scopes.insert(
         String::new(),
         ScopeInfo {
-            pos: find_insert_pos(ast, lines),
+            pos,
             imports: file_imports.clone(),
             indent: String::new(),
             locals: BTreeSet::new(),
@@ -585,24 +585,16 @@ impl Lines {
     }
 }
 
-fn find_insert_pos(ast: &File, lines: &Lines) -> usize {
-    ast.items
-        .iter()
-        .filter_map(
-            |i| if let Item::Use(u) = i { Some(lines.end(u.span().end().line)) } else { None },
-        )
-        .next_back()
-        .unwrap_or(0)
-}
-
-fn collect_file_imports(ast: &File) -> BTreeSet<String> {
-    let mut s = BTreeSet::new();
+fn collect_file_context(ast: &File, lines: &Lines) -> (usize, BTreeSet<String>) {
+    let mut imports = BTreeSet::new();
+    let mut pos = 0;
     for i in &ast.items {
         if let Item::Use(u) = i {
-            collect_idents(&u.tree, &mut s);
+            pos = lines.end(u.span().end().line);
+            collect_idents(&u.tree, &mut imports);
         }
     }
-    s
+    (pos, imports)
 }
 
 fn collect_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
