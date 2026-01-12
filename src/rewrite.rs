@@ -43,8 +43,7 @@ const FMT_MACROS: &[&str] = &[
 #[derive(Clone)]
 struct Occurrence {
     path: String,
-    start: (usize, usize),
-    end: (usize, usize),
+    span: (usize, usize),
     scope: String,
     cfg: Vec<String>,
     locals: BTreeSet<String>,
@@ -69,12 +68,12 @@ struct Collector<'a> {
     bindings: Vec<BTreeSet<String>>,
 }
 
-fn path_span(path: &SynPath) -> Option<((usize, usize), (usize, usize))> {
+fn path_byte_span(path: &SynPath, lines: &Lines) -> Option<(usize, usize)> {
     let first = path.segments.first()?;
     let last = path.segments.last()?;
     let st = first.ident.span().start();
     let en = last.ident.span().end();
-    Some(((st.line, st.column), (en.line, en.column)))
+    Some((lines.to_byte(st.line, st.column)?, lines.to_byte(en.line, en.column)?))
 }
 
 impl<'a> Collector<'a> {
@@ -140,18 +139,12 @@ impl<'a> Collector<'a> {
         if path.segments.len() < 2 {
             return;
         }
-        if let Some((start, end)) = path_span(path) {
-            self.record(path, start, end, is_type);
+        if let Some(span) = path_byte_span(path, self.lines) {
+            self.record(path, span, is_type);
         }
     }
 
-    fn record(
-        &mut self,
-        path: &SynPath,
-        start: (usize, usize),
-        end: (usize, usize),
-        is_type: bool,
-    ) {
+    fn record(&mut self, path: &SynPath, span: (usize, usize), is_type: bool) {
         let segs = &path.segments;
         if segs.len() < 2 {
             return;
@@ -188,8 +181,7 @@ impl<'a> Collector<'a> {
 
         self.occs.push(Occurrence {
             path: full,
-            start,
-            end,
+            span,
             scope: self.cur_scope(),
             cfg: self.cur_cfg(),
             locals: self.cur_locals(),
@@ -447,7 +439,7 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
         return Ok(None);
     }
 
-    let edits = build_edits(&c, &ast, &lines, &file_imports);
+    let edits = build_edits(&c, &ast, &file_imports);
     if edits.is_empty() {
         return Ok(None);
     }
@@ -484,12 +476,7 @@ fn collect_occurrences<'a>(
     (c, file_imports)
 }
 
-fn build_edits(
-    c: &Collector,
-    ast: &File,
-    lines: &Lines,
-    file_imports: &BTreeSet<String>,
-) -> Vec<Edit> {
+fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let defs = collect_defs(ast);
     let mut by_scope: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
@@ -522,11 +509,7 @@ fn build_edits(
                 if let Some(u) = s.use_stmt() {
                     by_cfg.entry(o.cfg.clone()).or_default().insert(u);
                 }
-                if let (Some(st), Some(en)) =
-                    (lines.to_byte(o.start.0, o.start.1), lines.to_byte(o.end.0, o.end.1))
-                {
-                    edits.push(Edit::Rep(st, en, s.repl()));
-                }
+                edits.push(Edit::Rep(o.span.0, o.span.1, s.repl()));
             }
         }
 
