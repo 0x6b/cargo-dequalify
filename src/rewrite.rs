@@ -70,6 +70,14 @@ struct Collector<'a> {
     bindings: Vec<BTreeSet<String>>,
 }
 
+fn path_span(path: &SynPath) -> Option<((usize, usize), (usize, usize))> {
+    let first = path.segments.first()?;
+    let last = path.segments.last()?;
+    let st = first.ident.span().start();
+    let en = last.ident.span().end();
+    Some(((st.line, st.column), (en.line, en.column)))
+}
+
 impl<'a> Collector<'a> {
     fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines) -> Self {
         Self {
@@ -130,6 +138,15 @@ impl<'a> Collector<'a> {
         self.depth -= 1;
     }
 
+    fn record_path(&mut self, path: &SynPath, is_type: bool) {
+        if path.segments.len() < 2 {
+            return;
+        }
+        if let Some((start, end)) = path_span(path) {
+            self.record(path, start, end, is_type);
+        }
+    }
+
     fn record(
         &mut self,
         path: &SynPath,
@@ -152,15 +169,16 @@ impl<'a> Collector<'a> {
             .map(|e| (e.clone(), e.split("::").next().unwrap_or(&first).to_string()))
             .unwrap_or_else(|| (path_str(path), first));
 
-        let fc = eff.chars().next().unwrap_or('a');
-        if eff == "Self" || fc.is_uppercase() || self.ignore.contains(&eff) {
+        let starts_upper = eff.chars().next().is_some_and(|c| c.is_uppercase());
+        if eff == "Self" || starts_upper || self.ignore.contains(&eff) {
             return;
         }
 
         let parts: Vec<&str> = full.split("::").collect();
         if !is_type {
-            let stl = parts.get(parts.len().saturating_sub(2)).unwrap_or(&"");
-            if stl.chars().next().unwrap_or('a').is_uppercase() || PRIMITIVES.contains(stl) {
+            let parent = parts.get(parts.len().saturating_sub(2)).unwrap_or(&"");
+            let is_type_method = parent.chars().next().is_some_and(|c| c.is_uppercase());
+            if is_type_method || PRIMITIVES.contains(parent) {
                 return;
             }
         } else {
@@ -240,11 +258,7 @@ impl Visit<'_> for Collector<'_> {
     fn visit_item_impl(&mut self, n: &ItemImpl) {
         self.with_cfg(&n.attrs, |s| {
             if let Some((_, path, _)) = &n.trait_ {
-                if path.segments.len() >= 2 {
-                    let st = path.segments.first().unwrap().ident.span().start();
-                    let en = path.segments.last().unwrap().ident.span().end();
-                    s.record(path, (st.line, st.column), (en.line, en.column), true);
-                }
+                s.record_path(path, true);
             }
             visit::visit_item_impl(s, n)
         });
@@ -254,9 +268,7 @@ impl Visit<'_> for Collector<'_> {
         if let syn::Expr::Path(p) = &*n.func
             && p.qself.is_none()
         {
-            let s = p.span();
-            let (st, en) = (s.start(), s.end());
-            self.record(&p.path, (st.line, st.column), (en.line, en.column), false);
+            self.record_path(&p.path, false);
         }
         visit::visit_expr_call(self, n);
     }
@@ -291,23 +303,20 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_macro(&mut self, n: &Macro) {
-        let segs = &n.path.segments;
-        if segs.len() >= 2 {
-            let s = segs.span();
-            let (st, en) = (s.start(), s.end());
-            self.record(&n.path, (st.line, st.column), (en.line, en.column), false);
-        }
-        if segs.len() == 1 && FMT_MACROS.contains(&segs[0].ident.to_string().as_str()) {
+        self.record_path(&n.path, false);
+        let is_fmt = n.path.segments.len() == 1
+            && n.path.segments.first().is_some_and(|s| {
+                FMT_MACROS.contains(&s.ident.to_string().as_str())
+            });
+        if is_fmt {
             self.visit_fmt_args(n);
         }
         visit::visit_macro(self, n);
     }
 
     fn visit_type_path(&mut self, n: &TypePath) {
-        if n.qself.is_none() && n.path.segments.len() >= 2 {
-            let st = n.path.segments.first().unwrap().ident.span().start();
-            let en = n.path.segments.last().unwrap().ident.span().end();
-            self.record(&n.path, (st.line, st.column), (en.line, en.column), true);
+        if n.qself.is_none() {
+            self.record_path(&n.path, true);
         }
         visit::visit_type_path(self, n);
     }
@@ -557,40 +566,31 @@ fn path_str(p: &SynPath) -> String {
         .join("::")
 }
 
-struct Lines(Vec<(usize, Vec<usize>)>);
+struct Lines(Vec<usize>);
 impl Lines {
     fn new(src: &str) -> Self {
-        let mut lines = Vec::new();
-        let mut cur = Vec::new();
-        let mut start = 0;
+        let mut starts = vec![0];
         for (i, c) in src.char_indices() {
             if c == '\n' {
-                lines.push((start, cur));
-                cur = Vec::new();
-                start = i + 1;
-            } else {
-                cur.push(i - start);
+                starts.push(i + 1);
             }
         }
-        lines.push((start, cur));
-        Self(lines)
+        Self(starts)
     }
     fn to_byte(&self, line: usize, col: usize) -> Option<usize> {
         if line == 0 || line > self.0.len() {
             return None;
         }
-        let (s, o) = &self.0[line - 1];
-        Some(if col >= o.len() { s + o.last().map_or(0, |&x| x + 1) } else { s + o[col] })
+        Some(self.0[line - 1] + col)
     }
     fn end(&self, line: usize) -> usize {
         if line == 0 || line > self.0.len() {
             return 0;
         }
         if line < self.0.len() {
-            self.0[line].0 - 1
+            self.0[line] - 1
         } else {
-            let (s, o) = &self.0[line - 1];
-            s + o.last().map_or(0, |&x| x + 1)
+            self.0[line - 1]
         }
     }
 }
