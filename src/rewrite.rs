@@ -441,18 +441,36 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
     let ast: File = parse_file(&src).with_context(|| format!("parse {}", path.display()))?;
     let lines = Lines::new(&src);
     let ignore: BTreeSet<_> = ignore.iter().cloned().collect();
-    let mut c = Collector::new(&ignore, &lines);
 
-    let file_imports = collect_file_imports(&ast);
+    let (c, file_imports) = collect_occurrences(&ast, &lines, &ignore);
+    if c.occs.is_empty() {
+        return Ok(None);
+    }
+
+    let edits = build_edits(&c, &ast, &lines, &file_imports);
+    if edits.is_empty() {
+        return Ok(None);
+    }
+
+    apply_edits(path, &src, edits, dry)
+}
+
+fn collect_occurrences<'a>(
+    ast: &File,
+    lines: &'a Lines,
+    ignore: &'a BTreeSet<String>,
+) -> (Collector<'a>, BTreeSet<String>) {
+    let mut c = Collector::new(ignore, lines);
+    let file_imports = collect_file_imports(ast);
     c.scopes.insert(
         String::new(),
         ScopeInfo {
-            pos: find_insert_pos(&ast, &lines),
+            pos: find_insert_pos(ast, lines),
             imports: file_imports.clone(),
             indent: String::new(),
         },
     );
-    c.visit_file(&ast);
+    c.visit_file(ast);
 
     let mut cache = BTreeMap::new();
     let mappings_snap = c.mappings.clone();
@@ -463,18 +481,23 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
         o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
     }
 
-    if c.occs.is_empty() {
-        return Ok(None);
-    }
+    (c, file_imports)
+}
 
-    let prelude = collect_prelude(&ast);
-    let defs = collect_defs(&ast);
+fn build_edits(
+    c: &Collector,
+    ast: &File,
+    lines: &Lines,
+    file_imports: &BTreeSet<String>,
+) -> Vec<Edit> {
+    let prelude = collect_prelude(ast);
+    let defs = collect_defs(ast);
     let mut by_scope: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
     for o in &c.occs {
         by_scope.entry(&o.scope).or_default().push(o);
     }
 
-    let mut edits: Vec<Edit> = Vec::new();
+    let mut edits = Vec::new();
     for (scope, occs) in &by_scope {
         let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
         let mut existing = file_imports.clone();
@@ -523,12 +546,12 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
             }
         }
     }
+    edits
+}
 
-    if edits.is_empty() {
-        return Ok(None);
-    }
+fn apply_edits(path: &Path, src: &str, mut edits: Vec<Edit>, dry: bool) -> Result<Option<String>> {
     edits.sort_by_key(|e| Reverse(e.pos()));
-    let mut out = src.clone();
+    let mut out = src.to_string();
     for e in edits {
         match e {
             Edit::Ins(p, t) => out.insert_str(p, &t),
@@ -539,7 +562,7 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
         return Ok(None);
     }
     if dry {
-        return Ok(Some(diff(path, &src, &out)));
+        return Ok(Some(diff(path, src, &out)));
     }
     write(path, &out).with_context(|| format!("write {}", path.display()))?;
     Ok(Some(String::new()))
