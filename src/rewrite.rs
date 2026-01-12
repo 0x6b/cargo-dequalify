@@ -46,13 +46,13 @@ struct Occurrence {
     span: (usize, usize),
     scope: String,
     cfg: Vec<String>,
-    locals: BTreeSet<String>,
 }
 
 struct ScopeInfo {
     pos: usize,
     imports: BTreeSet<String>,
     indent: String,
+    locals: BTreeSet<String>,
 }
 
 struct Collector<'a> {
@@ -65,7 +65,6 @@ struct Collector<'a> {
     internal: BTreeSet<String>,
     depth: usize,
     cfg: Vec<String>,
-    bindings: Vec<BTreeSet<String>>,
 }
 
 fn path_byte_span(path: &SynPath, lines: &Lines) -> Option<(usize, usize)> {
@@ -88,7 +87,6 @@ impl<'a> Collector<'a> {
             internal: BTreeSet::new(),
             depth: 0,
             cfg: Vec::new(),
-            bindings: Vec::new(),
         }
     }
 
@@ -101,8 +99,11 @@ impl<'a> Collector<'a> {
     fn cur_scope(&self) -> String {
         self.scope.join("::")
     }
-    fn cur_locals(&self) -> BTreeSet<String> {
-        self.bindings.iter().flatten().cloned().collect()
+    fn add_local(&mut self, name: String) {
+        let scope = self.cur_scope();
+        if let Some(info) = self.scopes.get_mut(&scope) {
+            info.locals.insert(name);
+        }
     }
 
     fn expand(&self, first: &str, rest: &[String]) -> Option<String> {
@@ -129,9 +130,10 @@ impl<'a> Collector<'a> {
                 collect_pat(&t.pat, &mut b);
             }
         }
-        self.bindings.push(b);
+        for name in b {
+            self.add_local(name);
+        }
         f(self);
-        self.bindings.pop();
         self.depth -= 1;
     }
 
@@ -184,7 +186,6 @@ impl<'a> Collector<'a> {
             span,
             scope: self.cur_scope(),
             cfg: self.cur_cfg(),
-            locals: self.cur_locals(),
         });
     }
 
@@ -221,9 +222,10 @@ impl Visit<'_> for Collector<'_> {
         for i in &n.inputs {
             collect_pat(i, &mut b);
         }
-        self.bindings.push(b);
+        for name in b {
+            self.add_local(name);
+        }
         visit::visit_expr_closure(self, n);
-        self.bindings.pop();
         self.depth -= 1;
     }
 
@@ -237,9 +239,7 @@ impl Visit<'_> for Collector<'_> {
         let mut b = BTreeSet::new();
         collect_pat(&n.pat, &mut b);
         for name in b {
-            if let Some(c) = self.bindings.last_mut() {
-                c.insert(name);
-            }
+            self.add_local(name);
         }
         visit_pat(self, &n.pat);
     }
@@ -282,7 +282,7 @@ impl Visit<'_> for Collector<'_> {
                 let pos = last_use
                     .map(|l| s.lines.end(l))
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-                s.scopes.insert(scope, ScopeInfo { pos, imports, indent });
+                s.scopes.insert(scope, ScopeInfo { pos, imports, indent, locals: BTreeSet::new() });
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
             } else {
@@ -460,6 +460,7 @@ fn collect_occurrences<'a>(
             pos: find_insert_pos(ast, lines),
             imports: file_imports.clone(),
             indent: String::new(),
+            locals: BTreeSet::new(),
         },
     );
     c.visit_file(ast);
@@ -491,9 +492,7 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
         existing.extend(info.imports.clone());
         existing.extend(prelude.clone());
         existing.extend(defs.clone());
-        for o in occs {
-            existing.extend(o.locals.clone());
-        }
+        existing.extend(info.locals.clone());
 
         let scope_paths: Vec<_> = occs
             .iter()
