@@ -13,11 +13,12 @@ clap = { version = "4.5.54", features = ["derive", "wrap_help"] }
 similar = "2.7.0"
 syn = { version = "2.0.111", features = ["full", "visit", "visit-mut"] }
 ignore = "0.4.25"
-toml = "0.9.10"
+toml = "0.9.11"
 serde = { version = "1.0.228", features = ["derive"] }
 dunce = "1.0.5"
 proc-macro2 = { version = "1.0.103", features = ["span-locations"], default-features = false }
 gix = { version = "0.77.0", default-features = false, features = ["status"] }
+glob = "0.3"
 
 [dev-dependencies]
 tempfile = "3.24.0"

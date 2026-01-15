@@ -8,6 +8,8 @@ use std::{
     process::Command,
 };
 
+use glob::glob;
+
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use dunce::canonicalize;
@@ -158,7 +160,23 @@ fn workspace_crate_roots(
 ) -> Vec<PathBuf> {
     use std::collections::BTreeSet;
     let root = cargo_toml.parent().unwrap_or(Path::new("."));
-    let mut roots: BTreeSet<PathBuf> = members.iter().map(|m| root.join(m)).collect();
+    let mut roots: BTreeSet<PathBuf> = members
+        .iter()
+        .flat_map(|m| {
+            let pattern = root.join(m);
+            let pattern_str = pattern.to_string_lossy();
+            if pattern_str.contains('*') || pattern_str.contains('?') {
+                glob(&pattern_str)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .filter(|p| p.is_dir())
+                    .collect()
+            } else {
+                vec![pattern]
+            }
+        })
+        .collect();
     if !virtual_root || roots.is_empty() {
         roots.insert(root.to_path_buf());
     }
