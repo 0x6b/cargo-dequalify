@@ -8,12 +8,11 @@ use std::{
     process::Command,
 };
 
-use glob::glob;
-
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use dunce::canonicalize;
 use gix::discover;
+use glob::glob;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use rewrite::process_file;

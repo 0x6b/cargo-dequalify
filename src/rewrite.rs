@@ -8,7 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use similar::{ChangeTag, TextDiff};
 use syn::{
-    Attribute, Expr, ExprCall, ExprClosure, File, ImplItemFn, Item, ItemConst, ItemEnum, ItemFn,
+    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, File, ImplItemFn, Item, ItemConst,
+    ItemEnum, ItemFn,
     ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local,
     Macro, Pat, Path as SynPath, Signature, TypePath, UseTree, parse_file,
     spanned::Spanned,
@@ -46,6 +47,7 @@ struct Occurrence {
     span: (usize, usize),
     scope: String,
     cfg: Vec<String>,
+    suffix: String,
 }
 
 struct ScopeInfo {
@@ -169,7 +171,19 @@ impl<'a> Collector<'a> {
         if !is_type {
             let parent = parts.get(parts.len().saturating_sub(2)).unwrap_or(&"");
             let is_type_method = parent.chars().next().is_some_and(|c| c.is_uppercase());
-            if is_type_method || PRIMITIVES.contains(parent) {
+            if PRIMITIVES.contains(parent) {
+                return;
+            }
+            if is_type_method {
+                let type_path = parts[..parts.len() - 1].join("::");
+                let suffix = parts[parts.len() - 1..].join("::");
+                self.occs.push(Occurrence {
+                    path: type_path,
+                    span,
+                    scope: self.cur_scope(),
+                    cfg: self.cur_cfg(),
+                    suffix,
+                });
                 return;
             }
         } else {
@@ -184,6 +198,7 @@ impl<'a> Collector<'a> {
             span,
             scope: self.cur_scope(),
             cfg: self.cur_cfg(),
+            suffix: String::new(),
         });
     }
 
@@ -258,6 +273,13 @@ impl Visit<'_> for Collector<'_> {
             self.record_path(&p.path, false);
         }
         visit::visit_expr_call(self, n);
+    }
+
+    fn visit_expr_struct(&mut self, n: &ExprStruct) {
+        if n.qself.is_none() {
+            self.record_path(&n.path, true);
+        }
+        visit::visit_expr_struct(self, n);
     }
 
     fn visit_item_mod(&mut self, n: &ItemMod) {
@@ -508,7 +530,12 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
                 if let Some(u) = s.use_stmt() {
                     by_cfg.entry(o.cfg.clone()).or_default().insert(u);
                 }
-                edits.push(Edit::Rep(o.span.0, o.span.1, s.repl()));
+                let repl = if o.suffix.is_empty() {
+                    s.repl()
+                } else {
+                    format!("{}::{}", s.repl(), o.suffix)
+                };
+                edits.push(Edit::Rep(o.span.0, o.span.1, repl));
             }
         }
 

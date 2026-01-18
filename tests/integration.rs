@@ -412,19 +412,40 @@ fn main() {
 }
 
 #[test]
-fn test_skip_nested_type_associated_functions() {
-    // pdf2svg::Cli::try_new() - Cli is a type, should not be rewritten
+fn test_dequalify_nested_type_associated_functions() {
+    // mycrate::MyType::new() -> import MyType, use MyType::new()
+    // foo::bar::Baz::create() -> import Baz, use Baz::create()
     let input = r#"
 fn main() {
     mycrate::MyType::new();
     foo::bar::Baz::create();
 }
 "#;
-    let mut file = NamedTempFile::new().unwrap();
-    file.write_all(input.as_bytes()).unwrap();
-    let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
-    assert!(changed.is_none());
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use mycrate::MyType;"),
+        "Should import MyType, got:\n{output}"
+    );
+    assert!(
+        output.contains("use foo::bar::Baz;"),
+        "Should import Baz, got:\n{output}"
+    );
+    assert!(
+        output.contains("MyType::new()"),
+        "Should rewrite to MyType::new(), got:\n{output}"
+    );
+    assert!(
+        output.contains("Baz::create()"),
+        "Should rewrite to Baz::create(), got:\n{output}"
+    );
+    assert!(
+        !output.contains("mycrate::MyType::new()"),
+        "Should not contain original qualified path, got:\n{output}"
+    );
+    assert!(
+        !output.contains("foo::bar::Baz::create()"),
+        "Should not contain original qualified path, got:\n{output}"
+    );
 }
 
 #[test]
@@ -1439,5 +1460,94 @@ impl std::str::FromStr for Config {
     assert!(
         !output.contains("impl std::str::FromStr"),
         "Should not contain qualified trait path, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_struct_literal_dequalify() {
+    // Struct literals with qualified paths should be dequalified
+    let input = r#"
+fn main() {
+    let opt = mycrate::Options {
+        field: 1,
+    };
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use mycrate::Options;"),
+        "Should import Options, got:\n{output}"
+    );
+    assert!(
+        output.contains("let opt = Options {"),
+        "Should rewrite to Options {{ }}, got:\n{output}"
+    );
+    assert!(
+        !output.contains("mycrate::Options {"),
+        "Should not contain qualified struct literal, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_struct_literal_deep_path() {
+    // Deeply nested struct literal paths
+    let input = r#"
+fn main() {
+    let opt = a::b::Config {
+        field: 1,
+    };
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use a::b::Config;"),
+        "Should import Config, got:\n{output}"
+    );
+    assert!(
+        output.contains("let opt = Config {"),
+        "Should rewrite to Config {{ }}, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_type_method_with_already_imported_type() {
+    // When the type is already imported, should not add a duplicate import
+    let input = r#"
+use mycrate::MyType;
+
+fn main() {
+    mycrate::MyType::new();
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should rewrite to MyType::new()
+    assert!(
+        output.contains("MyType::new()") && !output.contains("mycrate::MyType::new()"),
+        "Should rewrite to MyType::new(), got:\n{output}"
+    );
+    // Should NOT add a duplicate import
+    let import_count = output.matches("use mycrate::MyType;").count();
+    assert_eq!(import_count, 1, "Should have exactly one import, got:\n{output}");
+}
+
+#[test]
+fn test_type_method_conflict_with_existing_name() {
+    // When the type name conflicts, should use parent module import
+    let input = r#"
+struct MyType;
+
+fn main() {
+    mycrate::sub::MyType::new();
+}
+"#;
+    let output = process_source(input, &[]);
+    // MyType conflicts with local struct, should import parent module
+    assert!(
+        output.contains("use mycrate::sub;"),
+        "Should import parent module, got:\n{output}"
+    );
+    assert!(
+        output.contains("sub::MyType::new()"),
+        "Should rewrite to sub::MyType::new(), got:\n{output}"
     );
 }
