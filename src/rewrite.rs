@@ -55,6 +55,7 @@ struct ScopeInfo {
     imports: BTreeSet<String>,
     indent: String,
     locals: BTreeSet<String>,
+    has_glob: bool,
 }
 
 struct Collector<'a> {
@@ -289,10 +290,12 @@ impl Visit<'_> for Collector<'_> {
                 let scope = s.cur_scope();
                 let mut last_use = None;
                 let mut imports = BTreeSet::new();
+                let mut has_glob = false;
                 for i in items {
                     if let Item::Use(u) = i {
                         last_use = Some(u.span().end().line);
                         collect_idents(&u.tree, &mut imports);
+                        has_glob |= has_glob_import(&u.tree);
                     }
                 }
                 let indent = items
@@ -302,8 +305,10 @@ impl Visit<'_> for Collector<'_> {
                 let pos = last_use
                     .map(|l| s.lines.end(l))
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-                s.scopes
-                    .insert(scope, ScopeInfo { pos, imports, indent, locals: BTreeSet::new() });
+                s.scopes.insert(
+                    scope,
+                    ScopeInfo { pos, imports, indent, locals: BTreeSet::new(), has_glob },
+                );
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
             } else {
@@ -475,7 +480,7 @@ fn collect_occurrences<'a>(
     ignore: &'a BTreeSet<String>,
 ) -> (Collector<'a>, BTreeSet<String>) {
     let mut c = Collector::new(ignore, lines);
-    let (pos, file_imports) = collect_file_context(ast, lines);
+    let (pos, file_imports, has_glob) = collect_file_context(ast, lines);
     c.scopes.insert(
         String::new(),
         ScopeInfo {
@@ -483,6 +488,7 @@ fn collect_occurrences<'a>(
             imports: file_imports.clone(),
             indent: String::new(),
             locals: BTreeSet::new(),
+            has_glob,
         },
     );
     c.visit_file(ast);
@@ -502,6 +508,8 @@ fn collect_occurrences<'a>(
 fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let defs = collect_defs(ast);
+    let unqualified = collect_unqualified_names(ast);
+    let file_scope = c.scopes.get("").unwrap();
     let mut by_scope: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
     for o in &c.occs {
         by_scope.entry(&o.scope).or_default().push(o);
@@ -515,6 +523,9 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
         existing.extend(prelude.clone());
         existing.extend(defs.clone());
         existing.extend(info.locals.clone());
+        if info.has_glob || file_scope.has_glob {
+            existing.extend(unqualified.iter().cloned());
+        }
 
         let scope_paths: Vec<_> = occs
             .iter()
@@ -606,16 +617,18 @@ impl Lines {
     }
 }
 
-fn collect_file_context(ast: &File, lines: &Lines) -> (usize, BTreeSet<String>) {
+fn collect_file_context(ast: &File, lines: &Lines) -> (usize, BTreeSet<String>, bool) {
     let mut imports = BTreeSet::new();
     let mut pos = 0;
+    let mut has_glob = false;
     for i in &ast.items {
         if let Item::Use(u) = i {
             pos = lines.end(u.span().end().line);
             collect_idents(&u.tree, &mut imports);
+            has_glob |= has_glob_import(&u.tree);
         }
     }
-    (pos, imports)
+    (pos, imports, has_glob)
 }
 
 fn walk_use_tree<F: FnMut(&[String], &UseTree)>(
@@ -651,6 +664,15 @@ fn collect_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
         }
         _ => {}
     });
+}
+
+fn has_glob_import(tree: &UseTree) -> bool {
+    match tree {
+        UseTree::Glob(_) => true,
+        UseTree::Path(p) => has_glob_import(&p.tree),
+        UseTree::Group(g) => g.items.iter().any(has_glob_import),
+        _ => false,
+    }
 }
 
 fn is_internal(tree: &UseTree) -> bool {
@@ -769,6 +791,27 @@ fn collect_pat(pat: &Pat, out: &mut BTreeSet<String>) {
         Pat::Or(o) => o.cases.iter().for_each(|p| collect_pat(p, out)),
         _ => {}
     }
+}
+
+fn collect_unqualified_names(ast: &File) -> BTreeSet<String> {
+    struct V(BTreeSet<String>);
+    impl<'a> Visit<'a> for V {
+        fn visit_type_path(&mut self, n: &'a TypePath) {
+            if n.qself.is_none() && n.path.segments.len() == 1 {
+                let id = n.path.segments[0].ident.to_string();
+                if id != "Self"
+                    && !PRIMITIVES.contains(&id.as_str())
+                    && !(id.len() == 1 && id.chars().next().unwrap().is_uppercase())
+                {
+                    self.0.insert(id);
+                }
+            }
+            visit::visit_type_path(self, n);
+        }
+    }
+    let mut v = V(BTreeSet::new());
+    v.visit_file(ast);
+    v.0
 }
 
 fn collect_prelude(ast: &File) -> BTreeSet<String> {

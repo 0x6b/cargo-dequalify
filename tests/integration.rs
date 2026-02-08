@@ -1551,3 +1551,78 @@ fn main() {
         "Should rewrite to sub::MyType::new(), got:\n{output}"
     );
 }
+
+#[test]
+fn test_glob_import_conflict() {
+    // When a glob import brings a name into scope and it's used unqualified,
+    // importing the same name from another module would shadow it.
+    // The tool should escalate to a parent module import.
+    let input = r#"
+use lsp_types::*;
+
+fn foo(loc: Location) {
+    other::types::Location::new();
+}
+"#;
+    let output = process_source(input, &[]);
+    // Location is used unqualified (from glob), so importing other::types::Location
+    // would shadow it. Should escalate to parent module.
+    assert!(
+        output.contains("use other::types;"),
+        "Should import parent module to avoid shadowing glob name, got:\n{output}"
+    );
+    assert!(
+        output.contains("types::Location::new()"),
+        "Should rewrite to types::Location::new(), got:\n{output}"
+    );
+    assert!(
+        !output.contains("use other::types::Location;"),
+        "Should NOT import Location directly, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_glob_import_no_conflict() {
+    // When a glob import exists but the name being imported doesn't conflict
+    // with any unqualified name in the file, it should import normally.
+    let input = r#"
+use lsp_types::*;
+
+fn foo(loc: Location) {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    // "spawn" is not used unqualified anywhere, so no conflict with the glob.
+    assert!(
+        output.contains("use tokio::task::spawn;"),
+        "Should import spawn directly (no conflict with glob), got:\n{output}"
+    );
+    assert!(
+        output.contains("spawn(async"),
+        "Should rewrite to spawn(), got:\n{output}"
+    );
+}
+
+#[test]
+fn test_glob_import_in_module() {
+    // Glob imports inside inline modules should be detected too.
+    let input = r#"
+mod inner {
+    use lsp_types::*;
+
+    fn foo(loc: Location) {
+        other::types::Location::new();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use other::types;"),
+        "Should import parent module in module scope with glob, got:\n{output}"
+    );
+    assert!(
+        output.contains("types::Location::new()"),
+        "Should rewrite to types::Location::new(), got:\n{output}"
+    );
+}
