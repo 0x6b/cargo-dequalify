@@ -1626,3 +1626,46 @@ mod inner {
         "Should rewrite to types::Location::new(), got:\n{output}"
     );
 }
+
+#[test]
+fn test_skip_turbofish_generics() {
+    // When the type arg inside the turbofish is already imported (single segment),
+    // the outer path with turbofish must not be rewritten — the span replacement
+    // would drop the ::<...> generics.
+    let input = r#"
+use gray_matter::{Matter, engine::YAML};
+
+fn parse(content: &str) {
+    let m = Matter::<YAML>::new();
+}
+"#;
+    let output = process_source(input, &[]);
+    // The turbofish ::<YAML> must be preserved intact
+    assert!(
+        output.contains("Matter::<YAML>::new()"),
+        "Should preserve turbofish generics, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_turbofish_inner_path_dequalified() {
+    // When a qualified path appears inside turbofish generics, the inner path
+    // should be dequalified (as a separate type path), while the outer turbofish
+    // structure is preserved.
+    let input = r#"
+use gray_matter::Matter;
+
+fn parse(content: &str) {
+    let m = Matter::<gray_matter::engine::YAML>::new();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use gray_matter::engine::YAML;"),
+        "Should import inner type path, got:\n{output}"
+    );
+    assert!(
+        output.contains("Matter::<YAML>::new()"),
+        "Should dequalify inner path but preserve turbofish, got:\n{output}"
+    );
+}

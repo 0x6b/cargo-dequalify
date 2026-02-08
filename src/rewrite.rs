@@ -142,6 +142,18 @@ impl<'a> Collector<'a> {
         if path.segments.len() < 2 {
             return;
         }
+        // Skip paths with turbofish generics on non-last segments.
+        // The byte span covers the full text between first and last idents,
+        // so generics like `::<YAML>` between segments would be lost in the replacement.
+        let has_inner_generics = path
+            .segments
+            .iter()
+            .rev()
+            .skip(1)
+            .any(|s| !matches!(s.arguments, syn::PathArguments::None));
+        if has_inner_generics {
+            return;
+        }
         if let Some(span) = path_byte_span(path, self.lines) {
             self.record(path, span, is_type);
         }
