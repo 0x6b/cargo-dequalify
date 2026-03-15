@@ -56,6 +56,8 @@ struct ScopeInfo {
     indent: String,
     locals: BTreeSet<String>,
     has_glob: bool,
+    mappings: BTreeMap<String, String>,
+    defs: BTreeSet<String>,
 }
 
 struct Collector<'a> {
@@ -303,11 +305,39 @@ impl Visit<'_> for Collector<'_> {
                 let mut last_use = None;
                 let mut imports = BTreeSet::new();
                 let mut has_glob = false;
+                let mut mappings = BTreeMap::new();
+                let mut defs = BTreeSet::new();
                 for i in items {
-                    if let Item::Use(u) = i {
-                        last_use = Some(u.span().end().line);
-                        collect_idents(&u.tree, &mut imports);
-                        has_glob |= has_glob_import(&u.tree);
+                    match i {
+                        Item::Use(u) => {
+                            last_use = Some(u.span().end().line);
+                            collect_idents(&u.tree, &mut imports);
+                            has_glob |= has_glob_import(&u.tree);
+                            collect_mappings(&u.tree, &mut mappings);
+                        }
+                        Item::Fn(f) => {
+                            defs.insert(f.sig.ident.to_string());
+                        }
+                        Item::Struct(ItemStruct { ident, .. })
+                        | Item::Enum(ItemEnum { ident, .. })
+                        | Item::Union(ItemUnion { ident, .. })
+                        | Item::Trait(ItemTrait { ident, .. })
+                        | Item::Type(ItemType { ident, .. })
+                        | Item::Mod(ItemMod { ident, .. }) => {
+                            defs.insert(ident.to_string());
+                        }
+                        Item::Static(ItemStatic { ident, .. })
+                        | Item::Const(ItemConst { ident, .. }) => {
+                            defs.insert(ident.to_string());
+                        }
+                        Item::Impl(ItemImpl { items: impl_items, .. }) => {
+                            for ii in impl_items {
+                                if let syn::ImplItem::Fn(f) = ii {
+                                    defs.insert(f.sig.ident.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 let indent = items
@@ -319,7 +349,15 @@ impl Visit<'_> for Collector<'_> {
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
                 s.scopes.insert(
                     scope,
-                    ScopeInfo { pos, imports, indent, locals: BTreeSet::new(), has_glob },
+                    ScopeInfo {
+                        pos,
+                        imports,
+                        indent,
+                        locals: BTreeSet::new(),
+                        has_glob,
+                        mappings,
+                        defs,
+                    },
                 );
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
@@ -473,12 +511,12 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
     let lines = Lines::new(&src);
     let ignore: BTreeSet<_> = ignore.iter().cloned().collect();
 
-    let (c, file_imports) = collect_occurrences(&ast, &lines, &ignore);
+    let c = collect_occurrences(&ast, &lines, &ignore);
     if c.occs.is_empty() {
         return Ok(None);
     }
 
-    let edits = build_edits(&c, &ast, &file_imports);
+    let edits = build_edits(&c, &ast);
     if edits.is_empty() {
         return Ok(None);
     }
@@ -490,17 +528,20 @@ fn collect_occurrences<'a>(
     ast: &File,
     lines: &'a Lines,
     ignore: &'a BTreeSet<String>,
-) -> (Collector<'a>, BTreeSet<String>) {
+) -> Collector<'a> {
     let mut c = Collector::new(ignore, lines);
-    let (pos, file_imports, has_glob) = collect_file_context(ast, lines);
+    let (pos, file_imports, has_glob, file_mappings, file_defs) =
+        collect_file_context(ast, lines);
     c.scopes.insert(
         String::new(),
         ScopeInfo {
             pos,
-            imports: file_imports.clone(),
+            imports: file_imports,
             indent: String::new(),
             locals: BTreeSet::new(),
             has_glob,
+            mappings: file_mappings,
+            defs: file_defs,
         },
     );
     c.visit_file(ast);
@@ -514,14 +555,20 @@ fn collect_occurrences<'a>(
         o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
     }
 
-    (c, file_imports)
+    // Also resolve per-scope mappings
+    for info in c.scopes.values_mut() {
+        let snap = info.mappings.clone();
+        for v in info.mappings.values_mut() {
+            *v = resolve_path(v, &snap, &mut cache, 0);
+        }
+    }
+
+    c
 }
 
-fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Vec<Edit> {
+fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
-    let defs = collect_defs(ast);
     let unqualified = collect_unqualified_names(ast);
-    let file_scope = c.scopes.get("").unwrap();
     let mut by_scope: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
     for o in &c.occs {
         by_scope.entry(&o.scope).or_default().push(o);
@@ -530,12 +577,11 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
     let mut edits = Vec::new();
     for (scope, occs) in &by_scope {
         let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
-        let mut existing = file_imports.clone();
-        existing.extend(info.imports.clone());
+        let mut existing = info.imports.clone();
         existing.extend(prelude.clone());
-        existing.extend(defs.clone());
+        existing.extend(info.defs.clone());
         existing.extend(info.locals.clone());
-        if info.has_glob || file_scope.has_glob {
+        if info.has_glob {
             existing.extend(unqualified.iter().cloned());
         }
 
@@ -545,7 +591,7 @@ fn build_edits(c: &Collector, ast: &File, file_imports: &BTreeSet<String>) -> Ve
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let strats = resolve(&scope_paths, &existing, &c.mappings);
+        let strats = resolve(&scope_paths, &existing, &info.mappings);
 
         let mut by_cfg: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
         for o in occs {
@@ -629,18 +675,24 @@ impl Lines {
     }
 }
 
-fn collect_file_context(ast: &File, lines: &Lines) -> (usize, BTreeSet<String>, bool) {
+fn collect_file_context(
+    ast: &File,
+    lines: &Lines,
+) -> (usize, BTreeSet<String>, bool, BTreeMap<String, String>, BTreeSet<String>) {
     let mut imports = BTreeSet::new();
     let mut pos = 0;
     let mut has_glob = false;
+    let mut mappings = BTreeMap::new();
     for i in &ast.items {
         if let Item::Use(u) = i {
             pos = lines.end(u.span().end().line);
             collect_idents(&u.tree, &mut imports);
             has_glob |= has_glob_import(&u.tree);
+            collect_mappings(&u.tree, &mut mappings);
         }
     }
-    (pos, imports, has_glob)
+    let defs = collect_defs(ast);
+    (pos, imports, has_glob, mappings, defs)
 }
 
 fn walk_use_tree<F: FnMut(&[String], &UseTree)>(
