@@ -1124,6 +1124,41 @@ impl FromStr for Config {
 }
 
 #[test]
+fn test_cfg_attr_with_inner_cfg_gates_import() {
+    // `#[cfg_attr(unix, cfg(feature = "x"))]` makes the item exist when
+    // `not(unix) || feature = "x"`. The inserted import must be guarded with
+    // the same predicate, not unconditional.
+    let input = r#"
+#[cfg_attr(unix, cfg(feature = "x"))]
+fn a() {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should emit a cfg-gated import that combines the predicate and inner cfg.
+    assert!(
+        output.contains("#[cfg(any(not(unix)"),
+        "Expected combined cfg gate, got:\n{output}"
+    );
+    assert!(
+        output.contains("use tokio::task::spawn;"),
+        "Expected import line, got:\n{output}"
+    );
+    // Verify the cfg attribute immediately precedes the use statement.
+    let lines: Vec<_> = output.lines().collect();
+    let use_idx = lines
+        .iter()
+        .position(|l| l.trim() == "use tokio::task::spawn;")
+        .expect("use line present");
+    assert!(use_idx > 0);
+    assert!(
+        lines[use_idx - 1].trim_start().starts_with("#[cfg("),
+        "use must be preceded by cfg attribute, got line: {:?}",
+        lines[use_idx - 1]
+    );
+}
+
+#[test]
 fn test_cfg_function_import() {
     // Functions with #[cfg] should generate imports with matching #[cfg]
     let input = r#"
