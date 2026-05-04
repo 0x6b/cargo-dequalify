@@ -478,6 +478,18 @@ fn main() {
 }
 
 #[test]
+fn test_unicode_same_line_as_path() {
+    // proc_macro2 reports columns as UTF-8 *character* counts; the byte
+    // converter must account for multi-byte characters on the same line.
+    let input = "fn main() { let _x = \"日本語\"; tokio::task::spawn(async {}); }\n";
+    let output = process_source(input, &[]);
+    assert!(output.contains("\"日本語\""), "Unicode preserved: {output}");
+    assert!(output.contains("spawn(async"), "spawn rewritten: {output}");
+    assert!(!output.contains("tokio::task::spawn(async"));
+    assert!(output.contains("use tokio::task::spawn;"));
+}
+
+#[test]
 fn test_unicode_in_string_before_path() {
     let input = r#"
 fn main() {

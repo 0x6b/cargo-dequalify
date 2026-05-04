@@ -65,14 +65,14 @@ struct Collector<'a> {
     ignore: &'a BTreeSet<String>,
     scope: Vec<String>,
     scopes: BTreeMap<String, ScopeInfo>,
-    lines: &'a Lines,
+    lines: &'a Lines<'a>,
     mappings: BTreeMap<String, String>,
     internal: BTreeSet<String>,
     depth: usize,
     cfg: BTreeSet<String>,
 }
 
-fn path_byte_span(path: &SynPath, lines: &Lines) -> Option<(usize, usize)> {
+fn path_byte_span(path: &SynPath, lines: &Lines<'_>) -> Option<(usize, usize)> {
     let first = path.segments.first()?;
     let last = path.segments.last()?;
     let st = first.ident.span().start();
@@ -81,7 +81,7 @@ fn path_byte_span(path: &SynPath, lines: &Lines) -> Option<(usize, usize)> {
 }
 
 impl<'a> Collector<'a> {
-    fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines) -> Self {
+    fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines<'a>) -> Self {
         Self {
             occs: Vec::new(),
             ignore,
@@ -526,7 +526,7 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
 
 fn collect_occurrences<'a>(
     ast: &File,
-    lines: &'a Lines,
+    lines: &'a Lines<'a>,
     ignore: &'a BTreeSet<String>,
 ) -> Collector<'a> {
     let mut c = Collector::new(ignore, lines);
@@ -650,34 +650,58 @@ fn path_str(p: &SynPath) -> String {
         .join("::")
 }
 
-struct Lines(Vec<usize>);
-impl Lines {
-    fn new(src: &str) -> Self {
+struct Lines<'a> {
+    starts: Vec<usize>,
+    src: &'a str,
+}
+impl<'a> Lines<'a> {
+    fn new(src: &'a str) -> Self {
         let mut starts = vec![0];
         for (i, c) in src.char_indices() {
             if c == '\n' {
                 starts.push(i + 1);
             }
         }
-        Self(starts)
+        Self { starts, src }
     }
+    /// Convert a 1-indexed line and 0-indexed UTF-8 *character* column
+    /// (as produced by `proc_macro2::LineColumn`) to a byte offset.
     fn to_byte(&self, line: usize, col: usize) -> Option<usize> {
-        if line == 0 || line > self.0.len() {
+        if line == 0 || line > self.starts.len() {
             return None;
         }
-        Some(self.0[line - 1] + col)
+        let line_start = self.starts[line - 1];
+        let line_end = if line < self.starts.len() {
+            self.starts[line] - 1 // strip the trailing '\n'
+        } else {
+            self.src.len()
+        };
+        let line_str = self.src.get(line_start..line_end)?;
+        let mut byte = line_start;
+        for (n, c) in line_str.chars().enumerate() {
+            if n == col {
+                return Some(byte);
+            }
+            byte += c.len_utf8();
+        }
+        // Past the last character on the line; clamp to line end.
+        (col == line_str.chars().count()).then_some(byte)
     }
     fn end(&self, line: usize) -> usize {
-        if line == 0 || line > self.0.len() {
+        if line == 0 || line > self.starts.len() {
             return 0;
         }
-        if line < self.0.len() { self.0[line] - 1 } else { self.0[line - 1] }
+        if line < self.starts.len() {
+            self.starts[line] - 1
+        } else {
+            self.src.len()
+        }
     }
 }
 
 fn collect_file_context(
     ast: &File,
-    lines: &Lines,
+    lines: &Lines<'_>,
 ) -> (usize, BTreeSet<String>, bool, BTreeMap<String, String>, BTreeSet<String>) {
     let mut imports = BTreeSet::new();
     let mut pos = 0;
