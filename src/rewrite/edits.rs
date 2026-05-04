@@ -8,11 +8,13 @@ use std::{
 use anyhow::{Context, Result};
 use syn::File;
 
-use super::Change;
-use super::collect::{Collector, Occurrence};
-use super::defs::{collect_prelude, collect_unqualified_names};
-use super::diff::diff;
-use super::resolve::resolve;
+use super::{
+    Change,
+    collect::{Collector, Occurrence},
+    defs::{collect_prelude, collect_unqualified_names},
+    diff::diff,
+    resolve::resolve,
+};
 
 pub(super) enum Edit {
     Ins(usize, String),

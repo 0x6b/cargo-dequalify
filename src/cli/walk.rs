@@ -6,10 +6,7 @@ use std::{
 use ignore::WalkBuilder;
 
 pub(super) fn rs_files_under(roots: &[PathBuf]) -> Vec<PathBuf> {
-    roots
-        .iter()
-        .flat_map(|r| rs_files_in(r))
-        .collect()
+    roots.iter().flat_map(|r| rs_files_in(r)).collect()
 }
 
 fn rs_files_in(root: &Path) -> impl Iterator<Item = PathBuf> {

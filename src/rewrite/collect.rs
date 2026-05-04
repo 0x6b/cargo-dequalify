@@ -8,10 +8,12 @@ use syn::{
     visit::{self, Visit, visit_pat},
 };
 
-use super::attrs::extract_cfg;
-use super::consts::{FMT_MACROS, PRIMITIVES};
-use super::source::Lines;
-use super::use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str};
+use super::{
+    attrs::extract_cfg,
+    consts::{FMT_MACROS, PRIMITIVES},
+    source::Lines,
+    use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str},
+};
 
 #[derive(Clone)]
 pub(super) struct Occurrence {

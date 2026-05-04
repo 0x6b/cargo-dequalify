@@ -15,12 +15,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use syn::{File, Item, parse_file, spanned::Spanned};
-
 use collect::{Collector, ScopeInfo};
 use defs::collect_defs;
 use edits::{apply_edits, build_edits};
 use source::Lines;
+use syn::{File, Item, parse_file, spanned::Spanned, visit::Visit};
 use use_tree::{collect_idents, collect_mappings, has_glob_import, resolve_path};
 
 /// Configuration for [`process_file`].
@@ -82,7 +81,7 @@ fn collect_occurrences<'a>(
             defs: file_defs,
         },
     );
-    syn::visit::Visit::visit_file(&mut c, ast);
+    Visit::visit_file(&mut c, ast);
 
     let mut cache = BTreeMap::new();
     let mappings_snap = c.mappings.clone();

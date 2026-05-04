@@ -7,7 +7,10 @@ fn process_source(src: &str, ignore_roots: &[String]) -> String {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(src.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let opts = Options { ignore_roots: ignore_roots.to_vec(), dry_run: false };
+    let opts = Options {
+        ignore_roots: ignore_roots.to_vec(),
+        dry_run: false,
+    };
     process_file(&path, &opts).unwrap();
     read_to_string(&path).unwrap()
 }
@@ -273,8 +276,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed =
-        process_file(&path, &Options { dry_run: true, ..Default::default() }).unwrap();
+    let changed = process_file(&path, &Options { dry_run: true, ..Default::default() }).unwrap();
     assert!(matches!(changed, Change::Pending(_)));
     let content = read_to_string(&path).unwrap();
     assert_eq!(content, input);

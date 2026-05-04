@@ -9,10 +9,9 @@ use anyhow::{Context, Result, bail};
 use cargo_dequalify::{Change, Options, process_file};
 use clap::Parser;
 use dunce::canonicalize;
-use rayon::prelude::*;
-
 use fmt::run_cargo_fmt;
 use git::git_dirty_state;
+use rayon::prelude::*;
 use walk::rs_files_under;
 use workspace::{find_cargo_toml, load_workspace, workspace_crate_roots};
 

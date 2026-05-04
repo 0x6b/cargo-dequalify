@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use syn::{
     File, Item, ItemConst, ItemEnum, ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait,
     ItemType, ItemUnion, Path as SynPath, TypePath,
-    visit::{self, Visit, visit_path},
+    visit::{Visit, visit_path, visit_type_path},
 };
 
 use super::consts::{PRELUDE, PRIMITIVES};
@@ -52,7 +52,7 @@ pub(super) fn collect_unqualified_names(ast: &File) -> BTreeSet<String> {
                     self.0.insert(id);
                 }
             }
-            visit::visit_type_path(self, n);
+            visit_type_path(self, n);
         }
     }
     let mut v = V(BTreeSet::new());
