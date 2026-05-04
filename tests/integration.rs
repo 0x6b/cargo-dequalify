@@ -881,6 +881,50 @@ fn some_function() {
 }
 
 #[test]
+fn test_local_var_in_one_fn_does_not_block_import_in_other_fn() {
+    // A local variable inside one function must not prevent a sibling
+    // function from getting a clean short-name import.
+    let input = r#"
+fn a() {
+    let spawn = 1;
+    let _ = spawn + 1;
+}
+
+fn b() {
+    tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use tokio::task::spawn;"),
+        "expected short-name import, got:\n{output}"
+    );
+    assert!(output.contains("spawn(async"));
+    // The local in `a` is left alone.
+    assert!(output.contains("let spawn = 1;"));
+}
+
+#[test]
+fn test_local_var_in_same_fn_blocks_short_name_import() {
+    // When the qualified call site has a local of the same short name in
+    // scope, the dequalifier must escalate to the parent module.
+    let input = r#"
+fn a() {
+    let spawn = 1;
+    tokio::task::spawn(async {});
+    let _ = spawn + 1;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use tokio::task;"),
+        "expected parent-module import, got:\n{output}"
+    );
+    assert!(output.contains("task::spawn(async"));
+    assert!(!output.contains("use tokio::task::spawn;"));
+}
+
+#[test]
 fn test_local_use_does_not_leak_to_sibling_fn() {
     // A `use` inside one function must not influence path expansion in a
     // sibling function that does not import the same alias.

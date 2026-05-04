@@ -48,13 +48,16 @@ struct Occurrence {
     scope: String,
     cfg: Vec<String>,
     suffix: String,
+    /// Locals visible at the call site (union over the enclosing
+    /// function/closure frames). A short-name import for this occurrence must
+    /// not collide with any of these names.
+    locals: BTreeSet<String>,
 }
 
 struct ScopeInfo {
     pos: usize,
     imports: BTreeSet<String>,
     indent: String,
-    locals: BTreeSet<String>,
     has_glob: bool,
     mappings: BTreeMap<String, String>,
     defs: BTreeSet<String>,
@@ -70,6 +73,8 @@ struct Collector<'a> {
     internal: BTreeSet<String>,
     depth: usize,
     cfg: BTreeSet<String>,
+    /// Stack of locals introduced by the enclosing function/closure frames.
+    fn_locals: Vec<BTreeSet<String>>,
 }
 
 fn path_byte_span(path: &SynPath, lines: &Lines<'_>) -> Option<(usize, usize)> {
@@ -92,6 +97,7 @@ impl<'a> Collector<'a> {
             internal: BTreeSet::new(),
             depth: 0,
             cfg: BTreeSet::new(),
+            fn_locals: Vec::new(),
         }
     }
 
@@ -102,10 +108,17 @@ impl<'a> Collector<'a> {
         self.scope.join("::")
     }
     fn add_local(&mut self, name: String) {
-        let scope = self.cur_scope();
-        if let Some(info) = self.scopes.get_mut(&scope) {
-            info.locals.insert(name);
+        if let Some(top) = self.fn_locals.last_mut() {
+            top.insert(name);
         }
+    }
+
+    fn cur_locals(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        for f in &self.fn_locals {
+            out.extend(f.iter().cloned());
+        }
+        out
     }
 
     fn expand(&self, first: &str, rest: &[String]) -> Option<String> {
@@ -129,6 +142,7 @@ impl<'a> Collector<'a> {
         self.depth += 1;
         let saved_mappings = self.mappings.clone();
         let saved_internal = self.internal.clone();
+        self.fn_locals.push(BTreeSet::new());
         let mut b = BTreeSet::new();
         for i in &sig.inputs {
             if let syn::FnArg::Typed(t) = i {
@@ -139,6 +153,7 @@ impl<'a> Collector<'a> {
             self.add_local(name);
         }
         f(self);
+        self.fn_locals.pop();
         self.mappings = saved_mappings;
         self.internal = saved_internal;
         self.depth -= 1;
@@ -202,6 +217,7 @@ impl<'a> Collector<'a> {
                     scope: self.cur_scope(),
                     cfg: self.cur_cfg(),
                     suffix,
+                    locals: self.cur_locals(),
                 });
                 return;
             }
@@ -218,6 +234,7 @@ impl<'a> Collector<'a> {
             scope: self.cur_scope(),
             cfg: self.cur_cfg(),
             suffix: String::new(),
+            locals: self.cur_locals(),
         });
     }
 
@@ -252,6 +269,7 @@ impl Visit<'_> for Collector<'_> {
         self.depth += 1;
         let saved_mappings = self.mappings.clone();
         let saved_internal = self.internal.clone();
+        self.fn_locals.push(BTreeSet::new());
         let mut b = BTreeSet::new();
         for i in &n.inputs {
             collect_pat(i, &mut b);
@@ -260,6 +278,7 @@ impl Visit<'_> for Collector<'_> {
             self.add_local(name);
         }
         visit::visit_expr_closure(self, n);
+        self.fn_locals.pop();
         self.mappings = saved_mappings;
         self.internal = saved_internal;
         self.depth -= 1;
@@ -357,15 +376,7 @@ impl Visit<'_> for Collector<'_> {
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
                 s.scopes.insert(
                     scope,
-                    ScopeInfo {
-                        pos,
-                        imports,
-                        indent,
-                        locals: BTreeSet::new(),
-                        has_glob,
-                        mappings,
-                        defs,
-                    },
+                    ScopeInfo { pos, imports, indent, has_glob, mappings, defs },
                 );
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
@@ -590,7 +601,6 @@ fn collect_occurrences<'a>(
             pos,
             imports: file_imports,
             indent: String::new(),
-            locals: BTreeSet::new(),
             has_glob,
             mappings: file_mappings,
             defs: file_defs,
@@ -632,7 +642,12 @@ fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
         let mut existing = info.imports.clone();
         existing.extend(prelude.clone());
         existing.extend(info.defs.clone());
-        existing.extend(info.locals.clone());
+        // Pessimistically include every local visible at any occurrence in this
+        // scope: a single import line serves all occurrences, so the chosen
+        // short name must avoid collision in any of them.
+        for o in occs {
+            existing.extend(o.locals.iter().cloned());
+        }
         if info.has_glob {
             existing.extend(unqualified.iter().cloned());
         }
