@@ -52,8 +52,14 @@ fn main() -> Result<()> {
     let cargo_toml = find_cargo_toml(&root)?;
     let (virtual_root, members) = load_workspace(&cargo_toml)?;
 
-    if cli.write && !cli.allow_dirty && is_git_dirty(&root) {
-        bail!("uncommitted changes; commit/stash or use --allow-dirty");
+    if cli.write && !cli.allow_dirty {
+        match git_dirty_state(&root) {
+            Ok(true) => bail!("uncommitted changes; commit/stash or use --allow-dirty"),
+            Ok(false) => {}
+            Err(e) => bail!(
+                "could not determine git working-tree status: {e}; pass --allow-dirty to override"
+            ),
+        }
     }
 
     let crate_roots = workspace_crate_roots(&cargo_toml, virtual_root, &members);
@@ -117,11 +123,22 @@ fn run_cargo_fmt(tc: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn is_git_dirty(path: &Path) -> bool {
-    let Ok(repo) = discover(path) else { return false };
-    let Ok(platform) = repo.status(gix::progress::Discard) else { return false };
-    let Ok(mut iter) = platform.into_index_worktree_iter(None) else { return false };
-    iter.next().is_some()
+/// Returns `Ok(true)` if the worktree containing `path` has uncommitted
+/// changes, `Ok(false)` if it is clean *or* if `path` is not inside a git
+/// repository (no protection needed). Returns `Err` only when discovery
+/// succeeded but the status query itself failed, so the caller can decide
+/// whether to abort rather than silently overwriting files.
+fn git_dirty_state(path: &Path) -> Result<bool> {
+    let repo = match discover(path) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let mut iter = repo
+        .status(gix::progress::Discard)
+        .context("query git status")?
+        .into_index_worktree_iter(None)
+        .context("iterate index/worktree status")?;
+    Ok(iter.next().is_some())
 }
 
 #[derive(Deserialize)]
