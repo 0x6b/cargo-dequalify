@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
     fs::write,
+    ops::Range,
     path::Path,
 };
 
@@ -16,29 +17,9 @@ use super::{
     resolve::resolve,
 };
 
-pub(super) enum Edit {
-    Ins(usize, String),
-    Rep(usize, usize, String),
-}
-
-impl Edit {
-    fn pos(&self) -> usize {
-        match self {
-            Edit::Ins(p, _) => *p,
-            Edit::Rep(s, _, _) => *s,
-        }
-    }
-
-    /// Used as a tiebreaker so that, when an `Ins` and a `Rep` share the
-    /// same byte position, the `Rep` is applied first (in reverse-position
-    /// order this means the `Ins` lands strictly before the replaced range,
-    /// not in the middle of freshly inserted text).
-    fn kind_rank(&self) -> u8 {
-        match self {
-            Edit::Ins(_, _) => 0,
-            Edit::Rep(_, _, _) => 1,
-        }
-    }
+pub(super) struct Edit {
+    range: Range<usize>,
+    text: String,
 }
 
 pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
@@ -53,8 +34,8 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
     for (scope, occs) in &by_scope {
         let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
         let mut existing = info.imports.clone();
-        existing.extend(prelude.clone());
-        existing.extend(info.defs.clone());
+        existing.extend(prelude.iter().cloned());
+        existing.extend(info.defs.iter().cloned());
         // Pessimistically include every local visible at any occurrence in this
         // scope: a single import line serves all occurrences, so the chosen
         // short name must avoid collision in any of them.
@@ -79,12 +60,12 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
                 if let Some(u) = s.use_stmt() {
                     by_cfg.entry(o.cfg.clone()).or_default().insert(u);
                 }
-                let repl = if o.suffix.is_empty() {
+                let text = if o.suffix.is_empty() {
                     s.repl()
                 } else {
                     format!("{}::{}", s.repl(), o.suffix)
                 };
-                edits.push(Edit::Rep(o.span.0, o.span.1, repl));
+                edits.push(Edit { range: o.span.0..o.span.1, text });
             }
         }
 
@@ -97,7 +78,10 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
             })
             .collect();
         if !blocks.is_empty() {
-            edits.push(Edit::Ins(info.pos, format!("\n{}\n", blocks.join("\n"))));
+            edits.push(Edit {
+                range: info.pos..info.pos,
+                text: format!("\n{}\n", blocks.join("\n")),
+            });
         }
     }
     edits
@@ -110,15 +94,13 @@ pub(super) fn apply_edits(
     dry: bool,
 ) -> Result<Change> {
     // Apply edits from the end of the file backwards so positions in earlier
-    // edits remain valid. When two edits share a byte position, apply the
-    // `Rep` first so the `Ins` is not swallowed by the replacement range.
-    edits.sort_by_key(|e| (Reverse(e.pos()), Reverse(e.kind_rank())));
+    // edits remain valid. When two edits share a start, the longer (Replace)
+    // sorts before the empty-range insertion, so the insertion lands strictly
+    // before the replaced range rather than inside it.
+    edits.sort_by_key(|e| (Reverse(e.range.start), Reverse(e.range.len())));
     let mut out = src.to_string();
     for e in edits {
-        match e {
-            Edit::Ins(p, t) => out.insert_str(p, &t),
-            Edit::Rep(s, e, t) => out.replace_range(s..e, &t),
-        }
+        out.replace_range(e.range, &e.text);
     }
     if out == src {
         return Ok(Change::None);
