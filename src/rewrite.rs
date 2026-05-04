@@ -127,6 +127,8 @@ impl<'a> Collector<'a> {
 
     fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
         self.depth += 1;
+        let saved_mappings = self.mappings.clone();
+        let saved_internal = self.internal.clone();
         let mut b = BTreeSet::new();
         for i in &sig.inputs {
             if let syn::FnArg::Typed(t) = i {
@@ -137,6 +139,8 @@ impl<'a> Collector<'a> {
             self.add_local(name);
         }
         f(self);
+        self.mappings = saved_mappings;
+        self.internal = saved_internal;
         self.depth -= 1;
     }
 
@@ -246,6 +250,8 @@ impl Visit<'_> for Collector<'_> {
 
     fn visit_expr_closure(&mut self, n: &ExprClosure) {
         self.depth += 1;
+        let saved_mappings = self.mappings.clone();
+        let saved_internal = self.internal.clone();
         let mut b = BTreeSet::new();
         for i in &n.inputs {
             collect_pat(i, &mut b);
@@ -254,6 +260,8 @@ impl Visit<'_> for Collector<'_> {
             self.add_local(name);
         }
         visit::visit_expr_closure(self, n);
+        self.mappings = saved_mappings;
+        self.internal = saved_internal;
         self.depth -= 1;
     }
 

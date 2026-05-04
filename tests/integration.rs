@@ -881,6 +881,31 @@ fn some_function() {
 }
 
 #[test]
+fn test_local_use_does_not_leak_to_sibling_fn() {
+    // A `use` inside one function must not influence path expansion in a
+    // sibling function that does not import the same alias.
+    let input = r#"
+fn a() {
+    use std::fs;
+    let _ = fs::read_to_string("a");
+}
+
+fn b() {
+    let _ = fs::read_to_string("b");
+}
+"#;
+    let output = process_source(input, &[]);
+    // `a` is rewritten via its own local mapping.
+    assert!(output.contains("read_to_string(\"a\")"));
+    // `b`'s `fs::read_to_string` must remain literal: there is no `use std::fs;`
+    // in scope, so the dequalifier must not invent a top-level expansion.
+    assert!(
+        output.contains("fs::read_to_string(\"b\")"),
+        "expected b's path untouched, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_local_internal_import_not_expanded() {
     // `use crate::foo;` inside a function creates a local alias for an internal module.
     // Paths using that alias should NOT be expanded since adding a file-level import
