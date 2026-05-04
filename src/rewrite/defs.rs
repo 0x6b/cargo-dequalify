@@ -12,33 +12,29 @@ use super::consts::{PRELUDE, PRIMITIVES};
 /// a file or a `mod { ... }`). Includes inherent-impl method names so they
 /// can shadow potential short-name imports.
 pub(super) fn collect_defs(items: &[Item]) -> BTreeSet<String> {
-    let mut s = BTreeSet::new();
-    for i in items {
-        match i {
-            Item::Fn(f) => {
-                s.insert(f.sig.ident.to_string());
-            }
-            Item::Struct(ItemStruct { ident, .. })
-            | Item::Enum(ItemEnum { ident, .. })
-            | Item::Union(ItemUnion { ident, .. })
-            | Item::Trait(ItemTrait { ident, .. })
-            | Item::Type(ItemType { ident, .. })
-            | Item::Mod(ItemMod { ident, .. })
-            | Item::Static(ItemStatic { ident, .. })
-            | Item::Const(ItemConst { ident, .. }) => {
-                s.insert(ident.to_string());
-            }
-            Item::Impl(ItemImpl { items: impl_items, .. }) => {
-                for ii in impl_items {
-                    if let syn::ImplItem::Fn(f) = ii {
-                        s.insert(f.sig.ident.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
+    items.iter().flat_map(item_def_idents).collect()
+}
+
+fn item_def_idents(item: &Item) -> Vec<String> {
+    match item {
+        Item::Fn(f) => vec![f.sig.ident.to_string()],
+        Item::Struct(ItemStruct { ident, .. })
+        | Item::Enum(ItemEnum { ident, .. })
+        | Item::Union(ItemUnion { ident, .. })
+        | Item::Trait(ItemTrait { ident, .. })
+        | Item::Type(ItemType { ident, .. })
+        | Item::Mod(ItemMod { ident, .. })
+        | Item::Static(ItemStatic { ident, .. })
+        | Item::Const(ItemConst { ident, .. }) => vec![ident.to_string()],
+        Item::Impl(ItemImpl { items, .. }) => items
+            .iter()
+            .filter_map(|ii| match ii {
+                syn::ImplItem::Fn(f) => Some(f.sig.ident.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
     }
-    s
 }
 
 pub(super) fn collect_unqualified_names(ast: &File) -> BTreeSet<String> {

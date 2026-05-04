@@ -76,9 +76,7 @@ pub fn run(cli: Cli) -> Result<()> {
         })
         .collect();
     diffs.sort_by(|a, b| a.0.cmp(&b.0));
-    for (_, d) in &diffs {
-        print!("{d}");
-    }
+    diffs.iter().for_each(|(_, d)| print!("{d}"));
 
     let any_changes = results
         .iter()

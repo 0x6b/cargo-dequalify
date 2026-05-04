@@ -54,46 +54,43 @@ pub(super) fn resolve(
     existing: &BTreeSet<String>,
     mappings: &BTreeMap<String, String>,
 ) -> BTreeMap<String, Strategy> {
-    let mut strats: Vec<_> = paths.iter().map(|p| Strategy::new(p)).collect();
-    for s in &mut strats {
-        if mappings.get(s.segs.last().unwrap()).is_some_and(|m| m == &s.full) {
-            s.exists = true;
-        }
-    }
+    let mut strats: Vec<Strategy> = paths.iter().map(|p| Strategy::new(p)).collect();
+    strats
+        .iter_mut()
+        .filter(|s| mappings.get(s.segs.last().unwrap()).is_some_and(|m| m == &s.full))
+        .for_each(|s| s.exists = true);
     loop {
-        let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-        for (i, s) in strats.iter().enumerate() {
-            if !s.same() && !s.exists {
-                groups.entry(s.ident().into()).or_default().push(i);
-            }
-        }
-        let mut changed = false;
-        for v in groups.values().filter(|v| v.len() > 1) {
-            for &i in v {
-                changed |= strats[i].up();
-            }
-        }
+        let groups: BTreeMap<String, Vec<usize>> = strats
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| !s.same() && !s.exists)
+            .fold(BTreeMap::new(), |mut acc, (i, s)| {
+                acc.entry(s.ident().into()).or_default().push(i);
+                acc
+            });
+        let changed = groups
+            .values()
+            .filter(|v| v.len() > 1)
+            .flat_map(|v| v.iter().copied())
+            .fold(false, |acc, i| acc | strats[i].up());
         if !changed {
             break;
         }
     }
     loop {
-        let mut changed = false;
-        for s in &mut strats {
-            if !s.same() && !s.exists && existing.contains(s.ident()) {
-                changed |= s.up();
-            }
-        }
+        let changed = strats
+            .iter_mut()
+            .filter(|s| !s.same() && !s.exists && existing.contains(s.ident()))
+            .fold(false, |acc, s| acc | s.up());
         if !changed {
             break;
         }
     }
     let mut used = BTreeSet::new();
-    let mut res = BTreeMap::new();
-    for s in strats {
-        if !s.same() && used.insert(s.ident().to_string()) {
-            res.insert(s.full.clone(), s);
-        }
-    }
-    res
+    strats
+        .into_iter()
+        .filter_map(|s| {
+            (!s.same() && used.insert(s.ident().to_string())).then(|| (s.full.clone(), s))
+        })
+        .collect()
 }

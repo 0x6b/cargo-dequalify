@@ -25,13 +25,14 @@ pub(super) struct Edit {
 pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let unqualified = collect_unqualified_names(ast);
-    let mut by_scope: BTreeMap<&str, Vec<&Occurrence>> = BTreeMap::new();
-    for o in &c.occs {
-        by_scope.entry(&o.scope).or_default().push(o);
-    }
+    let by_scope: BTreeMap<&str, Vec<&Occurrence>> =
+        c.occs.iter().fold(BTreeMap::new(), |mut acc, o| {
+            acc.entry(&o.scope).or_default().push(o);
+            acc
+        });
 
     let mut edits = Vec::new();
-    for (scope, occs) in &by_scope {
+    by_scope.iter().for_each(|(scope, occs)| {
         let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
         let mut existing = info.imports.clone();
         existing.extend(prelude.iter().cloned());
@@ -39,9 +40,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
         // Pessimistically include every local visible at any occurrence in this
         // scope: a single import line serves all occurrences, so the chosen
         // short name must avoid collision in any of them.
-        for o in occs {
-            existing.extend(o.locals.iter().cloned());
-        }
+        existing.extend(occs.iter().flat_map(|o| o.locals.iter().cloned()));
         if info.has_glob {
             existing.extend(unqualified.iter().cloned());
         }
@@ -55,8 +54,9 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
         let strats = resolve(&scope_paths, &existing, &info.mappings);
 
         let mut by_cfg: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
-        for o in occs {
-            if let Some(s) = strats.get(&o.path) {
+        occs.iter()
+            .filter_map(|o| strats.get(&o.path).map(|s| (o, s)))
+            .for_each(|(o, s)| {
                 if let Some(u) = s.use_stmt() {
                     by_cfg.entry(o.cfg.clone()).or_default().insert(u);
                 }
@@ -66,8 +66,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
                     format!("{}::{}", s.repl(), o.suffix)
                 };
                 edits.push(Edit { range: o.span.0..o.span.1, text });
-            }
-        }
+            });
 
         let ind = &info.indent;
         let blocks: Vec<String> = by_cfg
@@ -83,7 +82,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
                 text: format!("\n{}\n", blocks.join("\n")),
             });
         }
-    }
+    });
     edits
 }
 
@@ -99,9 +98,7 @@ pub(super) fn apply_edits(
     // before the replaced range rather than inside it.
     edits.sort_by_key(|e| (Reverse(e.range.start), Reverse(e.range.len())));
     let mut out = src.to_string();
-    for e in edits {
-        out.replace_range(e.range, &e.text);
-    }
+    edits.into_iter().for_each(|e| out.replace_range(e.range, &e.text));
     if out == src {
         return Ok(Change::None);
     }

@@ -5,12 +5,12 @@ pub(super) struct Lines<'a> {
 
 impl<'a> Lines<'a> {
     pub(super) fn new(src: &'a str) -> Self {
-        let mut starts = vec![0];
-        for (i, c) in src.char_indices() {
-            if c == '\n' {
-                starts.push(i + 1);
-            }
-        }
+        let starts = std::iter::once(0)
+            .chain(
+                src.char_indices()
+                    .filter_map(|(i, c)| (c == '\n').then_some(i + 1)),
+            )
+            .collect();
         Self { starts, src }
     }
 
@@ -27,15 +27,12 @@ impl<'a> Lines<'a> {
             self.src.len()
         };
         let line_str = self.src.get(line_start..line_end)?;
-        let mut byte = line_start;
-        for (n, c) in line_str.chars().enumerate() {
-            if n == col {
-                return Some(byte);
-            }
-            byte += c.len_utf8();
-        }
-        // Past the last character on the line; clamp to line end.
-        (col == line_str.chars().count()).then_some(byte)
+        line_str
+            .char_indices()
+            .nth(col)
+            .map(|(b, _)| line_start + b)
+            // Past the last character on the line; clamp to line end.
+            .or_else(|| (col == line_str.chars().count()).then_some(line_start + line_str.len()))
     }
 
     pub(super) fn end(&self, line: usize) -> usize {

@@ -90,11 +90,7 @@ impl<'a> Collector<'a> {
     }
 
     fn cur_locals(&self) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
-        for f in &self.fn_locals {
-            out.extend(f.iter().cloned());
-        }
-        out
+        self.fn_locals.iter().flatten().cloned().collect()
     }
 
     fn expand(&self, first: &str, rest: &[String]) -> Option<String> {
@@ -106,12 +102,14 @@ impl<'a> Collector<'a> {
     }
 
     fn with_cfg<F: FnOnce(&mut Self)>(&mut self, attrs: &[Attribute], f: F) {
-        let cfgs = extract_cfg(attrs);
-        let added: Vec<_> = cfgs.into_iter().filter(|c| self.cfg.insert(c.clone())).collect();
+        let added: Vec<_> = extract_cfg(attrs)
+            .into_iter()
+            .filter(|c| self.cfg.insert(c.clone()))
+            .collect();
         f(self);
-        for c in added {
-            self.cfg.remove(&c);
-        }
+        added.iter().for_each(|c| {
+            self.cfg.remove(c);
+        });
     }
 
     /// Run `f` inside a fresh function/closure frame: `mappings` and
@@ -131,11 +129,13 @@ impl<'a> Collector<'a> {
 
     fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
         let mut locals = BTreeSet::new();
-        for i in &sig.inputs {
-            if let syn::FnArg::Typed(t) = i {
-                collect_pat(&t.pat, &mut locals);
-            }
-        }
+        sig.inputs
+            .iter()
+            .filter_map(|i| match i {
+                syn::FnArg::Typed(t) => Some(&t.pat),
+                _ => None,
+            })
+            .for_each(|p| collect_pat(p, &mut locals));
         self.with_frame(locals, f);
     }
 
@@ -221,9 +221,7 @@ impl<'a> Collector<'a> {
     fn visit_fmt_args(&mut self, m: &Macro) {
         use syn::{Token, parse::Parser, punctuated::Punctuated};
         if let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(m.tokens.clone()) {
-            for a in args.into_iter().skip(1) {
-                self.visit_expr(&a);
-            }
+            args.into_iter().skip(1).for_each(|a| self.visit_expr(&a));
         }
     }
 }
@@ -260,11 +258,9 @@ impl Visit<'_> for Collector<'_> {
                 self.visit_expr(e);
             }
         }
-        let mut b = BTreeSet::new();
-        collect_pat(&n.pat, &mut b);
-        for name in b {
-            self.add_local(name);
-        }
+        let mut locals = BTreeSet::new();
+        collect_pat(&n.pat, &mut locals);
+        locals.into_iter().for_each(|name| self.add_local(name));
         visit_pat(self, &n.pat);
     }
 
@@ -305,15 +301,18 @@ impl Visit<'_> for Collector<'_> {
             let mut imports = BTreeSet::new();
             let mut has_glob = false;
             let mut mappings = BTreeMap::new();
-            for u in items.iter().filter_map(|i| match i {
-                Item::Use(u) => Some(u),
-                _ => None,
-            }) {
-                last_use = Some(u.span().end().line);
-                collect_idents(&u.tree, &mut imports);
-                has_glob |= has_glob_import(&u.tree);
-                collect_mappings(&u.tree, &mut mappings);
-            }
+            items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Use(u) => Some(u),
+                    _ => None,
+                })
+                .for_each(|u| {
+                    last_use = Some(u.span().end().line);
+                    collect_idents(&u.tree, &mut imports);
+                    has_glob |= has_glob_import(&u.tree);
+                    collect_mappings(&u.tree, &mut mappings);
+                });
             let defs = collect_defs(items);
             let indent = items
                 .first()
@@ -376,12 +375,12 @@ pub(super) fn collect_occurrences<'a>(
 
     let mut cache = BTreeMap::new();
     resolve_mappings(&mut c.mappings, &mut cache);
-    for o in &mut c.occs {
-        o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
-    }
-    for info in c.scopes.values_mut() {
-        resolve_mappings(&mut info.mappings, &mut cache);
-    }
+    c.occs
+        .iter_mut()
+        .for_each(|o| o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0));
+    c.scopes
+        .values_mut()
+        .for_each(|info| resolve_mappings(&mut info.mappings, &mut cache));
     c
 }
 
@@ -390,15 +389,18 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
     let mut pos = 0;
     let mut has_glob = false;
     let mut mappings = BTreeMap::new();
-    for u in ast.items.iter().filter_map(|i| match i {
-        Item::Use(u) => Some(u),
-        _ => None,
-    }) {
-        pos = lines.end(u.span().end().line);
-        collect_idents(&u.tree, &mut imports);
-        has_glob |= has_glob_import(&u.tree);
-        collect_mappings(&u.tree, &mut mappings);
-    }
+    ast.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Use(u) => Some(u),
+            _ => None,
+        })
+        .for_each(|u| {
+            pos = lines.end(u.span().end().line);
+            collect_idents(&u.tree, &mut imports);
+            has_glob |= has_glob_import(&u.tree);
+            collect_mappings(&u.tree, &mut mappings);
+        });
     ScopeInfo {
         pos,
         imports,
@@ -413,7 +415,6 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
 /// of another mapping (i.e. fold chains like `A -> B -> C` into `A -> C`).
 fn resolve_mappings(map: &mut BTreeMap<String, String>, cache: &mut BTreeMap<String, String>) {
     let snap = map.clone();
-    for v in map.values_mut() {
-        *v = resolve_path(v, &snap, cache, 0);
-    }
+    map.values_mut()
+        .for_each(|v| *v = resolve_path(v, &snap, cache, 0));
 }
