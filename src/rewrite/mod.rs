@@ -84,23 +84,27 @@ fn collect_occurrences<'a>(
     Visit::visit_file(&mut c, ast);
 
     let mut cache = BTreeMap::new();
-    let mappings_snap = c.mappings.clone();
-    for v in c.mappings.values_mut() {
-        *v = resolve_path(v, &mappings_snap, &mut cache, 0);
-    }
+    resolve_mappings(&mut c.mappings, &mut cache);
     for o in &mut c.occs {
         o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
     }
-
-    // Also resolve per-scope mappings
     for info in c.scopes.values_mut() {
-        let snap = info.mappings.clone();
-        for v in info.mappings.values_mut() {
-            *v = resolve_path(v, &snap, &mut cache, 0);
-        }
+        resolve_mappings(&mut info.mappings, &mut cache);
     }
 
     c
+}
+
+/// Rewrite each value of `map` so its first segment is no longer an alias
+/// of another mapping (i.e. fold chains like `A -> B -> C` into `A -> C`).
+fn resolve_mappings(
+    map: &mut BTreeMap<String, String>,
+    cache: &mut BTreeMap<String, String>,
+) {
+    let snap = map.clone();
+    for v in map.values_mut() {
+        *v = resolve_path(v, &snap, cache, 0);
+    }
 }
 
 fn collect_file_context(
@@ -119,6 +123,6 @@ fn collect_file_context(
             collect_mappings(&u.tree, &mut mappings);
         }
     }
-    let defs = collect_defs(ast);
+    let defs = collect_defs(&ast.items);
     (pos, imports, has_glob, mappings, defs)
 }

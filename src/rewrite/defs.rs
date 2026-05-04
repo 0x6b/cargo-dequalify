@@ -8,9 +8,12 @@ use syn::{
 
 use super::consts::{PRELUDE, PRIMITIVES};
 
-pub(super) fn collect_defs(ast: &File) -> BTreeSet<String> {
+/// Names defined directly inside a sequence of items (e.g. the contents of
+/// a file or a `mod { ... }`). Includes inherent-impl method names so they
+/// can shadow potential short-name imports.
+pub(super) fn collect_defs(items: &[Item]) -> BTreeSet<String> {
     let mut s = BTreeSet::new();
-    for i in &ast.items {
+    for i in items {
         match i {
             Item::Fn(f) => {
                 s.insert(f.sig.ident.to_string());
@@ -20,14 +23,13 @@ pub(super) fn collect_defs(ast: &File) -> BTreeSet<String> {
             | Item::Union(ItemUnion { ident, .. })
             | Item::Trait(ItemTrait { ident, .. })
             | Item::Type(ItemType { ident, .. })
-            | Item::Mod(ItemMod { ident, .. }) => {
+            | Item::Mod(ItemMod { ident, .. })
+            | Item::Static(ItemStatic { ident, .. })
+            | Item::Const(ItemConst { ident, .. }) => {
                 s.insert(ident.to_string());
             }
-            Item::Static(ItemStatic { ident, .. }) | Item::Const(ItemConst { ident, .. }) => {
-                s.insert(ident.to_string());
-            }
-            Item::Impl(ItemImpl { items, .. }) => {
-                for ii in items {
+            Item::Impl(ItemImpl { items: impl_items, .. }) => {
+                for ii in impl_items {
                     if let syn::ImplItem::Fn(f) = ii {
                         s.insert(f.sig.ident.to_string());
                     }

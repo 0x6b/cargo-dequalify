@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
-    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, ImplItemFn, Item, ItemConst, ItemEnum,
-    ItemFn, ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse,
-    Local, Macro, Pat, Path as SynPath, Signature, TypePath,
+    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, ImplItemFn, Item, ItemFn, ItemImpl,
+    ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -11,6 +10,7 @@ use syn::{
 use super::{
     attrs::extract_cfg,
     consts::{FMT_MACROS, PRIMITIVES},
+    defs::collect_defs,
     source::Lines,
     use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str},
 };
@@ -295,61 +295,37 @@ impl Visit<'_> for Collector<'_> {
 
     fn visit_item_mod(&mut self, n: &ItemMod) {
         self.with_cfg(&n.attrs, |s| {
-            if let Some((brace, items)) = &n.content {
-                s.scope.push(n.ident.to_string());
-                let scope = s.cur_scope();
-                let mut last_use = None;
-                let mut imports = BTreeSet::new();
-                let mut has_glob = false;
-                let mut mappings = BTreeMap::new();
-                let mut defs = BTreeSet::new();
-                for i in items {
-                    match i {
-                        Item::Use(u) => {
-                            last_use = Some(u.span().end().line);
-                            collect_idents(&u.tree, &mut imports);
-                            has_glob |= has_glob_import(&u.tree);
-                            collect_mappings(&u.tree, &mut mappings);
-                        }
-                        Item::Fn(f) => {
-                            defs.insert(f.sig.ident.to_string());
-                        }
-                        Item::Struct(ItemStruct { ident, .. })
-                        | Item::Enum(ItemEnum { ident, .. })
-                        | Item::Union(ItemUnion { ident, .. })
-                        | Item::Trait(ItemTrait { ident, .. })
-                        | Item::Type(ItemType { ident, .. })
-                        | Item::Mod(ItemMod { ident, .. }) => {
-                            defs.insert(ident.to_string());
-                        }
-                        Item::Static(ItemStatic { ident, .. })
-                        | Item::Const(ItemConst { ident, .. }) => {
-                            defs.insert(ident.to_string());
-                        }
-                        Item::Impl(ItemImpl { items: impl_items, .. }) => {
-                            for ii in impl_items {
-                                if let syn::ImplItem::Fn(f) = ii {
-                                    defs.insert(f.sig.ident.to_string());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                let indent = items
-                    .first()
-                    .map(|i| " ".repeat(i.span().start().column))
-                    .unwrap_or(" ".repeat(4 * s.scope.len()));
-                let pos = last_use
-                    .map(|l| s.lines.end(l))
-                    .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-                s.scopes
-                    .insert(scope, ScopeInfo { pos, imports, indent, has_glob, mappings, defs });
+            let Some((brace, items)) = &n.content else {
                 visit::visit_item_mod(s, n);
-                s.scope.pop();
-            } else {
-                visit::visit_item_mod(s, n);
+                return;
+            };
+            s.scope.push(n.ident.to_string());
+            let scope = s.cur_scope();
+            let mut last_use = None;
+            let mut imports = BTreeSet::new();
+            let mut has_glob = false;
+            let mut mappings = BTreeMap::new();
+            for u in items.iter().filter_map(|i| match i {
+                Item::Use(u) => Some(u),
+                _ => None,
+            }) {
+                last_use = Some(u.span().end().line);
+                collect_idents(&u.tree, &mut imports);
+                has_glob |= has_glob_import(&u.tree);
+                collect_mappings(&u.tree, &mut mappings);
             }
+            let defs = collect_defs(items);
+            let indent = items
+                .first()
+                .map(|i| " ".repeat(i.span().start().column))
+                .unwrap_or_else(|| " ".repeat(4 * s.scope.len()));
+            let pos = last_use
+                .map(|l| s.lines.end(l))
+                .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
+            s.scopes
+                .insert(scope, ScopeInfo { pos, imports, indent, has_glob, mappings, defs });
+            visit::visit_item_mod(s, n);
+            s.scope.pop();
         });
     }
 
