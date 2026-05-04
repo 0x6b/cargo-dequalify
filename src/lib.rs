@@ -1,3 +1,3 @@
 mod rewrite;
 
-pub use rewrite::process_file;
+pub use rewrite::{Options, process_file};

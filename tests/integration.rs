@@ -1,13 +1,14 @@
 use std::{fs::read_to_string, io::Write};
 
-use cargo_dequalify::process_file;
+use cargo_dequalify::{Options, process_file};
 use tempfile::NamedTempFile;
 
 fn process_source(src: &str, ignore_roots: &[String]) -> String {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(src.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    process_file(&path, ignore_roots, false).unwrap();
+    let opts = Options { ignore_roots: ignore_roots.to_vec(), dry_run: false };
+    process_file(&path, &opts).unwrap();
     read_to_string(&path).unwrap()
 }
 
@@ -87,7 +88,7 @@ impl Foo {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     assert!(changed.is_none());
 }
 
@@ -167,7 +168,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     assert!(changed.is_none());
 }
 
@@ -272,7 +273,8 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], true).unwrap();
+    let changed =
+        process_file(&path, &Options { dry_run: true, ..Default::default() }).unwrap();
     assert!(changed.is_some());
     let content = read_to_string(&path).unwrap();
     assert_eq!(content, input);
@@ -392,7 +394,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     assert!(changed.is_none());
 }
 
@@ -407,7 +409,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     assert!(changed.is_none());
 }
 
@@ -644,7 +646,7 @@ fn main() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - primitive type methods should be skipped
     assert!(changed.is_none());
 }
@@ -954,7 +956,7 @@ impl Foo {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - crate::commands is an internal import
     assert!(changed.is_none());
 }
@@ -975,7 +977,7 @@ fn bar() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - self::commands is an internal import
     assert!(changed.is_none());
 }
@@ -998,7 +1000,7 @@ mod nested {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
-    let changed = process_file(&path, &[], false).unwrap();
+    let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - super::commands is an internal import
     assert!(changed.is_none());
 }

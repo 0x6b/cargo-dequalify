@@ -6,7 +6,7 @@ mod workspace;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use cargo_dequalify::process_file;
+use cargo_dequalify::{Options, process_file};
 use clap::Parser;
 use dunce::canonicalize;
 use rayon::prelude::*;
@@ -56,9 +56,13 @@ pub fn run(cli: Cli) -> Result<()> {
     let crate_roots = workspace_crate_roots(&cargo_toml, virtual_root, &members, &exclude);
     let rs_files = rs_files_under(&crate_roots);
 
+    let opts = Options {
+        ignore_roots: cli.ignore_roots.clone(),
+        dry_run: !cli.write,
+    };
     let results: Vec<_> = rs_files
         .par_iter()
-        .map(|p| (p.clone(), process_file(p, &cli.ignore_roots, !cli.write)))
+        .map(|p| (p.clone(), process_file(p, &opts)))
         .collect();
 
     let mut diffs: Vec<_> = results

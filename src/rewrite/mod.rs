@@ -23,11 +23,21 @@ use edits::{apply_edits, build_edits};
 use source::Lines;
 use use_tree::{collect_idents, collect_mappings, has_glob_import, resolve_path};
 
-pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<String>> {
+/// Configuration for [`process_file`].
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// Top-level path roots whose qualified uses should be left alone
+    /// (e.g. `"std"`, `"core"`, `"alloc"`).
+    pub ignore_roots: Vec<String>,
+    /// If true, do not write the file; produce a unified diff string instead.
+    pub dry_run: bool,
+}
+
+pub fn process_file(path: &Path, options: &Options) -> Result<Option<String>> {
     let src = read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let ast: File = parse_file(&src).with_context(|| format!("parse {}", path.display()))?;
     let lines = Lines::new(&src);
-    let ignore: BTreeSet<_> = ignore.iter().cloned().collect();
+    let ignore: BTreeSet<_> = options.ignore_roots.iter().cloned().collect();
 
     let c = collect_occurrences(&ast, &lines, &ignore);
     if c.occs.is_empty() {
@@ -39,7 +49,7 @@ pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<
         return Ok(None);
     }
 
-    apply_edits(path, &src, edits, dry)
+    apply_edits(path, &src, edits, options.dry_run)
 }
 
 fn collect_occurrences<'a>(
