@@ -582,6 +582,16 @@ impl Edit {
             Edit::Rep(s, _, _) => *s,
         }
     }
+    /// Used as a tiebreaker so that, when an `Ins` and a `Rep` share the
+    /// same byte position, the `Rep` is applied first (in reverse-position
+    /// order this means the `Ins` lands strictly before the replaced range,
+    /// not in the middle of freshly inserted text).
+    fn kind_rank(&self) -> u8 {
+        match self {
+            Edit::Ins(_, _) => 0,
+            Edit::Rep(_, _, _) => 1,
+        }
+    }
 }
 
 pub fn process_file(path: &Path, ignore: &[String], dry: bool) -> Result<Option<String>> {
@@ -707,7 +717,10 @@ fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
 }
 
 fn apply_edits(path: &Path, src: &str, mut edits: Vec<Edit>, dry: bool) -> Result<Option<String>> {
-    edits.sort_by_key(|e| Reverse(e.pos()));
+    // Apply edits from the end of the file backwards so positions in earlier
+    // edits remain valid. When two edits share a byte position, apply the
+    // `Rep` first so the `Ins` is not swallowed by the replacement range.
+    edits.sort_by_key(|e| (Reverse(e.pos()), Reverse(e.kind_rank())));
     let mut out = src.to_string();
     for e in edits {
         match e {
