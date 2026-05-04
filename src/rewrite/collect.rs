@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
-    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, ImplItemFn, Item, ItemFn, ItemImpl,
+    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
     ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
@@ -12,7 +12,7 @@ use super::{
     consts::{FMT_MACROS, PRIMITIVES},
     defs::collect_defs,
     source::Lines,
-    use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str},
+    use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path},
 };
 
 #[derive(Clone)]
@@ -362,5 +362,58 @@ fn collect_pat(pat: &Pat, out: &mut BTreeSet<String>) {
         Pat::Reference(r) => collect_pat(&r.pat, out),
         Pat::Or(o) => o.cases.iter().for_each(|p| collect_pat(p, out)),
         _ => {}
+    }
+}
+
+pub(super) fn collect_occurrences<'a>(
+    ast: &File,
+    lines: &'a Lines<'a>,
+    ignore: &'a BTreeSet<String>,
+) -> Collector<'a> {
+    let mut c = Collector::new(ignore, lines);
+    c.scopes.insert(String::new(), file_scope(ast, lines));
+    Visit::visit_file(&mut c, ast);
+
+    let mut cache = BTreeMap::new();
+    resolve_mappings(&mut c.mappings, &mut cache);
+    for o in &mut c.occs {
+        o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0);
+    }
+    for info in c.scopes.values_mut() {
+        resolve_mappings(&mut info.mappings, &mut cache);
+    }
+    c
+}
+
+fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
+    let mut imports = BTreeSet::new();
+    let mut pos = 0;
+    let mut has_glob = false;
+    let mut mappings = BTreeMap::new();
+    for u in ast.items.iter().filter_map(|i| match i {
+        Item::Use(u) => Some(u),
+        _ => None,
+    }) {
+        pos = lines.end(u.span().end().line);
+        collect_idents(&u.tree, &mut imports);
+        has_glob |= has_glob_import(&u.tree);
+        collect_mappings(&u.tree, &mut mappings);
+    }
+    ScopeInfo {
+        pos,
+        imports,
+        indent: String::new(),
+        has_glob,
+        mappings,
+        defs: collect_defs(&ast.items),
+    }
+}
+
+/// Rewrite each value of `map` so its first segment is no longer an alias
+/// of another mapping (i.e. fold chains like `A -> B -> C` into `A -> C`).
+fn resolve_mappings(map: &mut BTreeMap<String, String>, cache: &mut BTreeMap<String, String>) {
+    let snap = map.clone();
+    for v in map.values_mut() {
+        *v = resolve_path(v, &snap, cache, 0);
     }
 }
