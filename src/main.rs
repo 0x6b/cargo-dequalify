@@ -1,5 +1,3 @@
-mod rewrite;
-
 use std::{
     env::args,
     ffi::OsStr,
@@ -9,13 +7,13 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use cargo_dequalify::process_file;
 use clap::Parser;
 use dunce::canonicalize;
 use gix::discover;
 use glob::glob;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
-use rewrite::process_file;
 use serde::Deserialize;
 use toml::from_str;
 
