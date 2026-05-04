@@ -1,3 +1,4 @@
+use std::iter::once;
 pub(super) struct Lines<'a> {
     starts: Vec<usize>,
     src: &'a str,
@@ -5,11 +6,8 @@ pub(super) struct Lines<'a> {
 
 impl<'a> Lines<'a> {
     pub(super) fn new(src: &'a str) -> Self {
-        let starts = std::iter::once(0)
-            .chain(
-                src.char_indices()
-                    .filter_map(|(i, c)| (c == '\n').then_some(i + 1)),
-            )
+        let starts = once(0)
+            .chain(src.char_indices().filter_map(|(i, c)| (c == '\n').then_some(i + 1)))
             .collect();
         Self { starts, src }
     }

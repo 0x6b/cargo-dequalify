@@ -24,7 +24,9 @@ pub(super) fn extract_cfg(attrs: &[Attribute]) -> Vec<String> {
 fn cfg_attr_predicate(attr: &Attribute) -> Option<String> {
     use syn::{Token, parse::Parser, punctuated::Punctuated};
     let l = attr.meta.require_list().ok()?;
-    let metas = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(l.tokens.clone()).ok()?;
+    let metas = Punctuated::<Meta, Token![,]>::parse_terminated
+        .parse2(l.tokens.clone())
+        .ok()?;
     let mut iter = metas.iter();
     let pred_str = meta_to_string(iter.next()?);
     let inner_cfgs: Vec<String> = iter

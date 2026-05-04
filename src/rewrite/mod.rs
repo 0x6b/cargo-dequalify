@@ -11,11 +11,10 @@ mod use_tree;
 use std::{collections::BTreeSet, fs::read_to_string, path::Path};
 
 use anyhow::{Context, Result};
-use syn::{File, parse_file};
-
 use collect::collect_occurrences;
 use edits::{apply_edits, build_edits};
 use source::Lines;
+use syn::{File, parse_file};
 
 /// Configuration for [`process_file`].
 #[derive(Debug, Clone, Default)]

@@ -12,7 +12,9 @@ use super::{
     consts::{FMT_MACROS, PRIMITIVES},
     defs::collect_defs,
     source::Lines,
-    use_tree::{collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path},
+    use_tree::{
+        collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path,
+    },
 };
 
 #[derive(Clone)]
@@ -415,6 +417,5 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
 /// of another mapping (i.e. fold chains like `A -> B -> C` into `A -> C`).
 fn resolve_mappings(map: &mut BTreeMap<String, String>, cache: &mut BTreeMap<String, String>) {
     let snap = map.clone();
-    map.values_mut()
-        .for_each(|v| *v = resolve_path(v, &snap, cache, 0));
+    map.values_mut().for_each(|v| *v = resolve_path(v, &snap, cache, 0));
 }
