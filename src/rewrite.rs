@@ -20,7 +20,23 @@ const PRIMITIVES: &[&str] = &[
     "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64",
     "u128", "usize", "f32", "f64",
 ];
-const PRELUDE: &[&str] = &["Option", "Result", "Box", "String", "Vec"];
+/// Names from the 2021/2024 edition prelude that can appear in a
+/// type-position path. Used to detect when a top-level identifier already
+/// refers to a prelude item, so we avoid generating an import that would
+/// shadow it.
+const PRELUDE: &[&str] = &[
+    // types
+    "Box", "Option", "Result", "String", "Vec",
+    // variant constructors that may appear as paths
+    "Some", "None", "Ok", "Err",
+    // traits in the 2021 prelude
+    "Clone", "Copy", "Default", "Drop", "Eq", "Fn", "FnMut", "FnOnce", "From", "Hash",
+    "Into", "IntoIterator", "Iterator", "Ord", "PartialEq", "PartialOrd", "Send", "Sized",
+    "Sync", "ToOwned", "ToString", "TryFrom", "TryInto", "Unpin", "AsMut", "AsRef",
+    "DoubleEndedIterator", "Extend", "ExactSizeIterator",
+    // additions in the 2024 edition prelude
+    "Future", "IntoFuture",
+];
 const FMT_MACROS: &[&str] = &[
     "println",
     "print",
@@ -972,14 +988,16 @@ fn collect_unqualified_names(ast: &File) -> BTreeSet<String> {
 fn collect_prelude(ast: &File) -> BTreeSet<String> {
     struct V(BTreeSet<String>);
     impl<'a> Visit<'a> for V {
-        fn visit_type_path(&mut self, n: &'a TypePath) {
-            if n.qself.is_none() && n.path.segments.len() == 1 {
-                let id = n.path.segments[0].ident.to_string();
+        // Use `visit_path` so we catch prelude names in every position they
+        // can appear: type paths, expression paths, trait bounds, etc.
+        fn visit_path(&mut self, n: &'a SynPath) {
+            if n.segments.len() == 1 {
+                let id = n.segments[0].ident.to_string();
                 if PRELUDE.contains(&id.as_str()) {
                     self.0.insert(id);
                 }
             }
-            visit::visit_type_path(self, n);
+            visit::visit_path(self, n);
         }
     }
     let mut v = V(BTreeSet::new());

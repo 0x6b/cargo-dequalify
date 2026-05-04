@@ -1127,6 +1127,25 @@ impl FromStr for Config {
 }
 
 #[test]
+fn test_prelude_trait_shadowing_prevention() {
+    // `From` is in the 2021 prelude. If the file references it as a type,
+    // the dequalifier must not insert a `use other::From;` that shadows it.
+    let input = r#"
+fn check<T: From<u8>>(_: T) {}
+
+fn main() {
+    other::From::demo();
+}
+"#;
+    let output = process_source(input, &[]);
+    // Should escalate to parent module rather than `use other::From;`.
+    assert!(
+        !output.contains("use other::From;"),
+        "must not shadow prelude `From`, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_prelude_type_shadowing_prevention() {
     // When a file uses `Result<T, E>` (prelude's Result), we should NOT import
     // `std::fmt::Result` as that would shadow the prelude type and break the code.
