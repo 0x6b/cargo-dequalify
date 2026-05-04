@@ -8,6 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use syn::File;
 
+use super::Change;
 use super::collect::{Collector, Occurrence};
 use super::defs::{collect_prelude, collect_unqualified_names};
 use super::diff::diff;
@@ -105,7 +106,7 @@ pub(super) fn apply_edits(
     src: &str,
     mut edits: Vec<Edit>,
     dry: bool,
-) -> Result<Option<String>> {
+) -> Result<Change> {
     // Apply edits from the end of the file backwards so positions in earlier
     // edits remain valid. When two edits share a byte position, apply the
     // `Rep` first so the `Ins` is not swallowed by the replacement range.
@@ -118,11 +119,11 @@ pub(super) fn apply_edits(
         }
     }
     if out == src {
-        return Ok(None);
+        return Ok(Change::None);
     }
     if dry {
-        return Ok(Some(diff(path, src, &out)));
+        return Ok(Change::Pending(diff(path, src, &out)));
     }
     write(path, &out).with_context(|| format!("write {}", path.display()))?;
-    Ok(Some(String::new()))
+    Ok(Change::Written)
 }

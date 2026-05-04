@@ -1,6 +1,6 @@
 use std::{fs::read_to_string, io::Write};
 
-use cargo_dequalify::{Options, process_file};
+use cargo_dequalify::{Change, Options, process_file};
 use tempfile::NamedTempFile;
 
 fn process_source(src: &str, ignore_roots: &[String]) -> String {
@@ -89,7 +89,7 @@ impl Foo {
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn main() {
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -275,7 +275,7 @@ fn main() {
     let path = file.path().to_path_buf();
     let changed =
         process_file(&path, &Options { dry_run: true, ..Default::default() }).unwrap();
-    assert!(changed.is_some());
+    assert!(matches!(changed, Change::Pending(_)));
     let content = read_to_string(&path).unwrap();
     assert_eq!(content, input);
 }
@@ -395,7 +395,7 @@ fn main() {
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn main() {
     file.write_all(input.as_bytes()).unwrap();
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -648,7 +648,7 @@ fn main() {
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - primitive type methods should be skipped
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -958,7 +958,7 @@ impl Foo {
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - crate::commands is an internal import
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -979,7 +979,7 @@ fn bar() {
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - self::commands is an internal import
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]
@@ -1002,7 +1002,7 @@ mod nested {
     let path = file.path().to_path_buf();
     let changed = process_file(&path, &Options::default()).unwrap();
     // No changes should be made - super::commands is an internal import
-    assert!(changed.is_none());
+    assert!(matches!(changed, Change::None));
 }
 
 #[test]

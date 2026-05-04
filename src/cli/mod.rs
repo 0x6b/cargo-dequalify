@@ -6,7 +6,7 @@ mod workspace;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use cargo_dequalify::{Options, process_file};
+use cargo_dequalify::{Change, Options, process_file};
 use clap::Parser;
 use dunce::canonicalize;
 use rayon::prelude::*;
@@ -68,7 +68,7 @@ pub fn run(cli: Cli) -> Result<()> {
     let mut diffs: Vec<_> = results
         .iter()
         .filter_map(|(p, r)| match r {
-            Ok(Some(d)) if !d.is_empty() => Some((p.clone(), d.clone())),
+            Ok(Change::Pending(d)) => Some((p.clone(), d.clone())),
             Err(e) => {
                 eprintln!("error {}: {e}", p.display());
                 None
@@ -81,7 +81,9 @@ pub fn run(cli: Cli) -> Result<()> {
         print!("{d}");
     }
 
-    let any_changes = results.iter().any(|(_, r)| matches!(r, Ok(Some(_))));
+    let any_changes = results
+        .iter()
+        .any(|(_, r)| matches!(r, Ok(Change::Written | Change::Pending(_))));
     if any_changes && !cli.write {
         eprintln!("# Run with `-w` to apply, or `-w -f` to also format.");
     }
