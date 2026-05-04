@@ -106,13 +106,15 @@ fn main() -> Result<()> {
         && cli.write
         && let Some(tc) = &cli.fmt
     {
-        run_cargo_fmt(tc.as_deref())?;
+        let workspace_root = cargo_toml.parent().unwrap_or(Path::new("."));
+        run_cargo_fmt(workspace_root, tc.as_deref())?;
     }
     Ok(())
 }
 
-fn run_cargo_fmt(tc: Option<&str>) -> Result<()> {
+fn run_cargo_fmt(workspace_root: &Path, tc: Option<&str>) -> Result<()> {
     let mut cmd = Command::new("cargo");
+    cmd.current_dir(workspace_root);
     if let Some(t) = tc {
         cmd.arg(format!("+{t}"));
     }
