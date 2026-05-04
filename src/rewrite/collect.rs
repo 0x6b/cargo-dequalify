@@ -114,25 +114,29 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
+    /// Run `f` inside a fresh function/closure frame: `mappings` and
+    /// `internal` are saved and restored, depth is bumped, and `locals`
+    /// becomes the new top entry on the locals stack.
+    fn with_frame<F: FnOnce(&mut Self)>(&mut self, locals: BTreeSet<String>, f: F) {
         self.depth += 1;
         let saved_mappings = self.mappings.clone();
         let saved_internal = self.internal.clone();
-        self.fn_locals.push(BTreeSet::new());
-        let mut b = BTreeSet::new();
-        for i in &sig.inputs {
-            if let syn::FnArg::Typed(t) = i {
-                collect_pat(&t.pat, &mut b);
-            }
-        }
-        for name in b {
-            self.add_local(name);
-        }
+        self.fn_locals.push(locals);
         f(self);
         self.fn_locals.pop();
         self.mappings = saved_mappings;
         self.internal = saved_internal;
         self.depth -= 1;
+    }
+
+    fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
+        let mut locals = BTreeSet::new();
+        for i in &sig.inputs {
+            if let syn::FnArg::Typed(t) = i {
+                collect_pat(&t.pat, &mut locals);
+            }
+        }
+        self.with_frame(locals, f);
     }
 
     fn record_path(&mut self, path: &SynPath, is_type: bool) {
@@ -242,22 +246,11 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_expr_closure(&mut self, n: &ExprClosure) {
-        self.depth += 1;
-        let saved_mappings = self.mappings.clone();
-        let saved_internal = self.internal.clone();
-        self.fn_locals.push(BTreeSet::new());
-        let mut b = BTreeSet::new();
+        let mut locals = BTreeSet::new();
         for i in &n.inputs {
-            collect_pat(i, &mut b);
+            collect_pat(i, &mut locals);
         }
-        for name in b {
-            self.add_local(name);
-        }
-        visit::visit_expr_closure(self, n);
-        self.fn_locals.pop();
-        self.mappings = saved_mappings;
-        self.internal = saved_internal;
-        self.depth -= 1;
+        self.with_frame(locals, |s| visit::visit_expr_closure(s, n));
     }
 
     fn visit_local(&mut self, n: &Local) {
