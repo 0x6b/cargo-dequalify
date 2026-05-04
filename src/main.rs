@@ -205,8 +205,10 @@ fn workspace_crate_roots(
             .collect()
     };
     let excluded: BTreeSet<PathBuf> = expand(exclude);
-    let mut roots: BTreeSet<PathBuf> =
-        expand(members).into_iter().filter(|p| !excluded.contains(p)).collect();
+    let mut roots: BTreeSet<PathBuf> = expand(members)
+        .into_iter()
+        .filter(|p| !excluded.contains(p))
+        .collect();
     if !virtual_root || roots.is_empty() {
         let r = canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         if !excluded.contains(&r) {

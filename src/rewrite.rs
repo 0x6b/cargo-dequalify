@@ -9,11 +9,10 @@ use anyhow::{Context, Result};
 use similar::{ChangeTag, TextDiff};
 use syn::{
     Attribute, Expr, ExprCall, ExprClosure, ExprStruct, File, ImplItemFn, Item, ItemConst,
-    ItemEnum, ItemFn,
-    ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion, ItemUse, Local,
-    Macro, Pat, Path as SynPath, Signature, TypePath, UseTree, parse_file,
+    ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemType, ItemUnion,
+    ItemUse, Local, Macro, Meta, Pat, Path as SynPath, Signature, TypePath, UseTree, parse_file,
     spanned::Spanned,
-    visit::{self, Visit, visit_pat},
+    visit::{self, Visit, visit_pat, visit_path},
 };
 
 const PRIMITIVES: &[&str] = &[
@@ -26,16 +25,49 @@ const PRIMITIVES: &[&str] = &[
 /// shadow it.
 const PRELUDE: &[&str] = &[
     // types
-    "Box", "Option", "Result", "String", "Vec",
+    "Box",
+    "Option",
+    "Result",
+    "String",
+    "Vec",
     // variant constructors that may appear as paths
-    "Some", "None", "Ok", "Err",
+    "Some",
+    "None",
+    "Ok",
+    "Err",
     // traits in the 2021 prelude
-    "Clone", "Copy", "Default", "Drop", "Eq", "Fn", "FnMut", "FnOnce", "From", "Hash",
-    "Into", "IntoIterator", "Iterator", "Ord", "PartialEq", "PartialOrd", "Send", "Sized",
-    "Sync", "ToOwned", "ToString", "TryFrom", "TryInto", "Unpin", "AsMut", "AsRef",
-    "DoubleEndedIterator", "Extend", "ExactSizeIterator",
+    "Clone",
+    "Copy",
+    "Default",
+    "Drop",
+    "Eq",
+    "Fn",
+    "FnMut",
+    "FnOnce",
+    "From",
+    "Hash",
+    "Into",
+    "IntoIterator",
+    "Iterator",
+    "Ord",
+    "PartialEq",
+    "PartialOrd",
+    "Send",
+    "Sized",
+    "Sync",
+    "ToOwned",
+    "ToString",
+    "TryFrom",
+    "TryInto",
+    "Unpin",
+    "AsMut",
+    "AsRef",
+    "DoubleEndedIterator",
+    "Extend",
+    "ExactSizeIterator",
     // additions in the 2024 edition prelude
-    "Future", "IntoFuture",
+    "Future",
+    "IntoFuture",
 ];
 const FMT_MACROS: &[&str] = &[
     "println",
@@ -390,10 +422,8 @@ impl Visit<'_> for Collector<'_> {
                 let pos = last_use
                     .map(|l| s.lines.end(l))
                     .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-                s.scopes.insert(
-                    scope,
-                    ScopeInfo { pos, imports, indent, has_glob, mappings, defs },
-                );
+                s.scopes
+                    .insert(scope, ScopeInfo { pos, imports, indent, has_glob, mappings, defs });
                 visit::visit_item_mod(s, n);
                 s.scope.pop();
             } else {
@@ -423,7 +453,7 @@ impl Visit<'_> for Collector<'_> {
     }
 }
 
-fn meta_to_string(m: &syn::Meta) -> String {
+fn meta_to_string(m: &Meta) -> String {
     use syn::Meta;
     // Prefer the original source text when available; fall back to a
     // best-effort reconstruction.
@@ -619,8 +649,7 @@ fn collect_occurrences<'a>(
     ignore: &'a BTreeSet<String>,
 ) -> Collector<'a> {
     let mut c = Collector::new(ignore, lines);
-    let (pos, file_imports, has_glob, file_mappings, file_defs) =
-        collect_file_context(ast, lines);
+    let (pos, file_imports, has_glob, file_mappings, file_defs) = collect_file_context(ast, lines);
     c.scopes.insert(
         String::new(),
         ScopeInfo {
@@ -787,11 +816,7 @@ impl<'a> Lines<'a> {
         if line == 0 || line > self.starts.len() {
             return 0;
         }
-        if line < self.starts.len() {
-            self.starts[line] - 1
-        } else {
-            self.src.len()
-        }
+        if line < self.starts.len() { self.starts[line] - 1 } else { self.src.len() }
     }
 }
 
@@ -1010,7 +1035,7 @@ fn collect_prelude(ast: &File) -> BTreeSet<String> {
                     self.0.insert(id);
                 }
             }
-            visit::visit_path(self, n);
+            visit_path(self, n);
         }
     }
     let mut v = V(BTreeSet::new());

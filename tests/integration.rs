@@ -422,22 +422,10 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use mycrate::MyType;"),
-        "Should import MyType, got:\n{output}"
-    );
-    assert!(
-        output.contains("use foo::bar::Baz;"),
-        "Should import Baz, got:\n{output}"
-    );
-    assert!(
-        output.contains("MyType::new()"),
-        "Should rewrite to MyType::new(), got:\n{output}"
-    );
-    assert!(
-        output.contains("Baz::create()"),
-        "Should rewrite to Baz::create(), got:\n{output}"
-    );
+    assert!(output.contains("use mycrate::MyType;"), "Should import MyType, got:\n{output}");
+    assert!(output.contains("use foo::bar::Baz;"), "Should import Baz, got:\n{output}");
+    assert!(output.contains("MyType::new()"), "Should rewrite to MyType::new(), got:\n{output}");
+    assert!(output.contains("Baz::create()"), "Should rewrite to Baz::create(), got:\n{output}");
     assert!(
         !output.contains("mycrate::MyType::new()"),
         "Should not contain original qualified path, got:\n{output}"
@@ -916,10 +904,7 @@ fn a() {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use tokio::task;"),
-        "expected parent-module import, got:\n{output}"
-    );
+    assert!(output.contains("use tokio::task;"), "expected parent-module import, got:\n{output}");
     assert!(output.contains("task::spawn(async"));
     assert!(!output.contains("use tokio::task::spawn;"));
 }
@@ -1139,10 +1124,7 @@ fn main() {
 "#;
     let output = process_source(input, &[]);
     // Should escalate to parent module rather than `use other::From;`.
-    assert!(
-        !output.contains("use other::From;"),
-        "must not shadow prelude `From`, got:\n{output}"
-    );
+    assert!(!output.contains("use other::From;"), "must not shadow prelude `From`, got:\n{output}");
 }
 
 #[test]
@@ -1199,14 +1181,8 @@ fn a() {
 "#;
     let output = process_source(input, &[]);
     // Should emit a cfg-gated import that combines the predicate and inner cfg.
-    assert!(
-        output.contains("#[cfg(any(not(unix)"),
-        "Expected combined cfg gate, got:\n{output}"
-    );
-    assert!(
-        output.contains("use tokio::task::spawn;"),
-        "Expected import line, got:\n{output}"
-    );
+    assert!(output.contains("#[cfg(any(not(unix)"), "Expected combined cfg gate, got:\n{output}");
+    assert!(output.contains("use tokio::task::spawn;"), "Expected import line, got:\n{output}");
     // Verify the cfg attribute immediately precedes the use statement.
     let lines: Vec<_> = output.lines().collect();
     let use_idx = lines
@@ -1609,10 +1585,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use mycrate::Options;"),
-        "Should import Options, got:\n{output}"
-    );
+    assert!(output.contains("use mycrate::Options;"), "Should import Options, got:\n{output}");
     assert!(
         output.contains("let opt = Options {"),
         "Should rewrite to Options {{ }}, got:\n{output}"
@@ -1634,10 +1607,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use a::b::Config;"),
-        "Should import Config, got:\n{output}"
-    );
+    assert!(output.contains("use a::b::Config;"), "Should import Config, got:\n{output}");
     assert!(
         output.contains("let opt = Config {"),
         "Should rewrite to Config {{ }}, got:\n{output}"
@@ -1677,10 +1647,7 @@ fn main() {
 "#;
     let output = process_source(input, &[]);
     // MyType conflicts with local struct, should import parent module
-    assert!(
-        output.contains("use mycrate::sub;"),
-        "Should import parent module, got:\n{output}"
-    );
+    assert!(output.contains("use mycrate::sub;"), "Should import parent module, got:\n{output}");
     assert!(
         output.contains("sub::MyType::new()"),
         "Should rewrite to sub::MyType::new(), got:\n{output}"
@@ -1733,10 +1700,7 @@ fn foo(loc: Location) {
         output.contains("use tokio::task::spawn;"),
         "Should import spawn directly (no conflict with glob), got:\n{output}"
     );
-    assert!(
-        output.contains("spawn(async"),
-        "Should rewrite to spawn(), got:\n{output}"
-    );
+    assert!(output.contains("spawn(async"), "Should rewrite to spawn(), got:\n{output}");
 }
 
 #[test]

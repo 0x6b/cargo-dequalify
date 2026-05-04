@@ -7,21 +7,21 @@ license = "MIT"
 repository = "https://github.com/0x6b/cargo-dequalify"
 
 [dependencies]
-anyhow = "1.0.102"
-rayon = "1.11.0"
-clap = { version = "4.6.0", features = ["derive", "wrap_help"] }
-similar = "2.7.0"
-syn = { version = "2.0.117", features = ["full", "visit", "visit-mut"] }
-ignore = "0.4.25"
-toml = "1.0.6+spec-1.1.0"
-serde = { version = "1.0.228", features = ["derive"] }
-dunce = "1.0.5"
-proc-macro2 = { version = "1.0.106", features = ["span-locations"], default-features = false }
-gix = { version = "0.80.0", default-features = false, features = ["status"] }
-glob = "0.3.3"
+anyhow = "1.0"
+rayon = "1.12"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+similar = "3.1"
+syn = { version = "2.0", features = ["full", "visit", "visit-mut"] }
+ignore = "0.4"
+toml = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+dunce = "1.0"
+proc-macro2 = { version = "1.0", features = ["span-locations"], default-features = false }
+gix = { version = "0.83", default-features = false, features = ["status", "sha1"] }
+glob = "0.3"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3.27"
 
 [profile.release]
 lto = true
