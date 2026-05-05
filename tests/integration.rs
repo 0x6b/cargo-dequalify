@@ -1774,6 +1774,26 @@ fn parse(content: &str) {
 }
 
 #[test]
+fn test_bare_path_expression() {
+    // Qualified paths used as values (not called) should be dequalified.
+    let input = r#"
+fn main() {
+    let f = std::fs::read_to_string;
+    let _ = f;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use std::fs::read_to_string;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("let f = read_to_string;"),
+        "expected bare path to be rewritten, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_insert_below_inner_attrs_when_no_use() {
     // When a file has no `use` statements, new imports must be inserted after
     // any inner attributes / module doc comments. Otherwise the resulting

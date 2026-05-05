@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
-    Attribute, Expr, ExprCall, ExprClosure, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
+    Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
     ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
@@ -275,13 +275,11 @@ impl Visit<'_> for Collector<'_> {
         });
     }
 
-    fn visit_expr_call(&mut self, n: &ExprCall) {
-        if let syn::Expr::Path(p) = &*n.func
-            && p.qself.is_none()
-        {
-            self.record_path(&p.path, false);
+    fn visit_expr_path(&mut self, n: &ExprPath) {
+        if n.qself.is_none() {
+            self.record_path(&n.path, false);
         }
-        visit::visit_expr_call(self, n);
+        visit::visit_expr_path(self, n);
     }
 
     fn visit_expr_struct(&mut self, n: &ExprStruct) {
