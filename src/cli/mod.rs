@@ -3,10 +3,9 @@ mod git;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use cargo_dequalify::{Change, Options, process_path};
 use clap::Parser;
-use dunce::canonicalize;
 use fmt::run_cargo_fmt;
 use git::git_dirty_state;
 
@@ -32,11 +31,8 @@ pub struct Cli {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let root = canonicalize(&cli.target)
-        .with_context(|| format!("canonicalize {}", cli.target.display()))?;
-
     if cli.write && !cli.allow_dirty {
-        match git_dirty_state(&root) {
+        match git_dirty_state(&cli.target) {
             Ok(true) => bail!("uncommitted changes; commit/stash or use --allow-dirty"),
             Ok(false) => {}
             Err(e) => bail!(
@@ -49,7 +45,7 @@ pub fn run(cli: Cli) -> Result<()> {
         ignore_roots: cli.ignore_roots.clone(),
         dry_run: !cli.write,
     };
-    let outcome = process_path(&root, &opts)?;
+    let outcome = process_path(&cli.target, &opts)?;
 
     let mut diffs: Vec<_> = outcome
         .results

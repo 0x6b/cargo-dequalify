@@ -87,7 +87,10 @@ pub(super) fn workspace_crate_roots(cargo_toml: &Path, manifest: &WorkspaceManif
         .filter(|p| !excluded.contains(p))
         .collect();
     if !manifest.virtual_root || roots.is_empty() {
-        let r = canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        // `cargo_toml` is reached from a canonical input via `find_cargo_toml`,
+        // so its parent is also canonical and matches any canonical entries
+        // in `excluded` without an extra canonicalize call.
+        let r = root.to_path_buf();
         if !excluded.contains(&r) {
             roots.insert(r);
         }
