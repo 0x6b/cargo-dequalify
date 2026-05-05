@@ -30,6 +30,8 @@ fn item_def_idents(item: &Item) -> Vec<String> {
             .iter()
             .filter_map(|ii| match ii {
                 syn::ImplItem::Fn(f) => Some(f.sig.ident.to_string()),
+                syn::ImplItem::Const(c) => Some(c.ident.to_string()),
+                syn::ImplItem::Type(t) => Some(t.ident.to_string()),
                 _ => None,
             })
             .collect(),
