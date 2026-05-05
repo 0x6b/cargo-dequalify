@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
     Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
-    ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TraitBound, TypePath,
+    ItemMod, ItemUse, Local, Macro, Pat, PatStruct, PatTupleStruct, Path as SynPath, Signature,
+    TraitBound, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -354,6 +355,24 @@ impl Visit<'_> for Collector<'_> {
         // otherwise be skipped.
         self.record_path(&n.path, true);
         visit::visit_trait_bound(self, n);
+    }
+
+    fn visit_pat_struct(&mut self, n: &PatStruct) {
+        if n.qself.is_none() {
+            self.record_path(&n.path, true);
+        }
+        visit::visit_pat_struct(self, n);
+    }
+
+    fn visit_pat_tuple_struct(&mut self, n: &PatTupleStruct) {
+        if n.qself.is_none() {
+            // is_type=false so the type-method split treats `Foo::Bar(x)`
+            // as importing `Foo` and rewriting to `Foo::Bar(x)`, matching
+            // how the call form `Foo::Bar(x)` is handled in expression
+            // position.
+            self.record_path(&n.path, false);
+        }
+        visit::visit_pat_tuple_struct(self, n);
     }
 }
 

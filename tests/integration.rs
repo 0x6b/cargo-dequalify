@@ -1774,6 +1774,80 @@ fn parse(content: &str) {
 }
 
 #[test]
+fn test_pat_path_match_arm() {
+    let input = r#"
+mod inner {
+    pub enum Color { Red, Green, Blue }
+}
+
+fn name(c: inner::Color) -> &'static str {
+    match c {
+        inner::Color::Red => "r",
+        inner::Color::Green => "g",
+        inner::Color::Blue => "b",
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use inner::Color;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("Color::Red"),
+        "expected pat path rewrite, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_pat_tuple_struct_in_match() {
+    let input = r#"
+mod inner {
+    pub enum Msg { Hello(u32) }
+    pub fn make(n: u32) -> Msg { Msg::Hello(n) }
+}
+
+fn show(n: u32) {
+    if let inner::Msg::Hello(v) = inner::make(n) {
+        let _ = v;
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use inner::Msg;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("Msg::Hello(n)"),
+        "expected dequalified tuple-struct pat, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_pat_struct_in_match() {
+    let input = r#"
+mod inner {
+    pub struct Point { pub x: i32, pub y: i32 }
+}
+
+fn x_of(p: inner::Point) -> i32 {
+    let inner::Point { x, .. } = p;
+    x
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use inner::Point;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("let Point { x, .. }"),
+        "expected dequalified struct pat, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_trait_bound_dequalify() {
     // Qualified paths in generic constraints should be dequalified.
     let input = r#"
