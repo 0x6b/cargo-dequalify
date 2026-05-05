@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
     Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
-    ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TypePath,
+    ItemMod, ItemUse, Local, Macro, Pat, Path as SynPath, Signature, TraitBound, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -346,6 +346,14 @@ impl Visit<'_> for Collector<'_> {
             self.record_path(&n.path, true);
         }
         visit::visit_type_path(self, n);
+    }
+
+    fn visit_trait_bound(&mut self, n: &TraitBound) {
+        // TraitBound carries a bare `Path` (not a `TypePath`), so generic
+        // constraints like `T: std::fmt::Display` and `where T: ...` would
+        // otherwise be skipped.
+        self.record_path(&n.path, true);
+        visit::visit_trait_bound(self, n);
     }
 }
 

@@ -1774,6 +1774,46 @@ fn parse(content: &str) {
 }
 
 #[test]
+fn test_trait_bound_dequalify() {
+    // Qualified paths in generic constraints should be dequalified.
+    let input = r#"
+fn print<T: std::fmt::Display>(x: T) {
+    let _ = x;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use std::fmt::Display;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("T: Display"),
+        "expected dequalified bound, got:\n{output}"
+    );
+}
+
+#[test]
+fn test_where_clause_dequalify() {
+    let input = r#"
+fn make<T>() -> T
+where
+    T: std::default::Default,
+{
+    T::default()
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        output.contains("use std::default::Default;"),
+        "expected import, got:\n{output}"
+    );
+    assert!(
+        output.contains("T: Default"),
+        "expected dequalified where bound, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_bare_path_expression() {
     // Qualified paths used as values (not called) should be dequalified.
     let input = r#"
