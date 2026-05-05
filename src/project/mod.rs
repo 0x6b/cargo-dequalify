@@ -17,9 +17,9 @@ pub struct ProcessOutcome {
 
 pub fn process_path(path: &Path, options: &Options) -> Result<ProcessOutcome> {
     let cargo_toml = find_cargo_toml(path)?;
-    let (virtual_root, members, exclude) = load_workspace(&cargo_toml)?;
+    let manifest = load_workspace(&cargo_toml)?;
     let workspace_root = cargo_toml.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let crate_roots = workspace_crate_roots(&cargo_toml, virtual_root, &members, &exclude);
+    let crate_roots = workspace_crate_roots(&cargo_toml, &manifest);
     let rs_files = rs_files_under(&crate_roots);
     let results = rs_files
         .par_iter()

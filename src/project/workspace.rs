@@ -35,7 +35,13 @@ pub(super) fn find_cargo_toml(start: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("Cargo.toml not found"))
 }
 
-pub(super) fn load_workspace(path: &Path) -> Result<(bool, Vec<String>, Vec<String>)> {
+pub(super) struct WorkspaceManifest {
+    pub(super) virtual_root: bool,
+    pub(super) members: Vec<String>,
+    pub(super) exclude: Vec<String>,
+}
+
+pub(super) fn load_workspace(path: &Path) -> Result<WorkspaceManifest> {
     let parsed: CargoToml = from_str(&read_to_string(path)?)?;
     let ws = parsed.workspace;
     // Prefer `default-members` when present; cargo uses it as the active set
@@ -50,15 +56,10 @@ pub(super) fn load_workspace(path: &Path) -> Result<(bool, Vec<String>, Vec<Stri
     members.dedup();
     exclude.sort();
     exclude.dedup();
-    Ok((parsed.package.is_none(), members, exclude))
+    Ok(WorkspaceManifest { virtual_root: parsed.package.is_none(), members, exclude })
 }
 
-pub(super) fn workspace_crate_roots(
-    cargo_toml: &Path,
-    virtual_root: bool,
-    members: &[String],
-    exclude: &[String],
-) -> Vec<PathBuf> {
+pub(super) fn workspace_crate_roots(cargo_toml: &Path, manifest: &WorkspaceManifest) -> Vec<PathBuf> {
     let root = cargo_toml.parent().unwrap_or(Path::new("."));
     let expand = |patterns: &[String]| -> BTreeSet<PathBuf> {
         patterns
@@ -80,12 +81,12 @@ pub(super) fn workspace_crate_roots(
             .filter_map(|p| canonicalize(&p).ok().or(Some(p)))
             .collect()
     };
-    let excluded: BTreeSet<PathBuf> = expand(exclude);
-    let mut roots: BTreeSet<PathBuf> = expand(members)
+    let excluded: BTreeSet<PathBuf> = expand(&manifest.exclude);
+    let mut roots: BTreeSet<PathBuf> = expand(&manifest.members)
         .into_iter()
         .filter(|p| !excluded.contains(p))
         .collect();
-    if !virtual_root || roots.is_empty() {
+    if !manifest.virtual_root || roots.is_empty() {
         let r = canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         if !excluded.contains(&r) {
             roots.insert(r);
