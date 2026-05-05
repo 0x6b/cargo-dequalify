@@ -131,6 +131,7 @@ dependencies = [
  "glob",
  "ignore",
  "proc-macro2",
+ "quote",
  "rayon",
  "serde",
  "similar",

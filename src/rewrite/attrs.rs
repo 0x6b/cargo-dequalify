@@ -1,3 +1,4 @@
+use quote::ToTokens;
 use syn::{Attribute, Meta, spanned::Spanned};
 
 use super::use_tree::path_str;
@@ -52,6 +53,6 @@ fn meta_to_string(m: &Meta) -> String {
     match m {
         Meta::Path(p) => path_str(p),
         Meta::List(l) => format!("{}({})", path_str(&l.path), l.tokens),
-        Meta::NameValue(nv) => format!("{} = ?", path_str(&nv.path)),
+        Meta::NameValue(nv) => format!("{} = {}", path_str(&nv.path), nv.value.to_token_stream()),
     }
 }

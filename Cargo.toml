@@ -17,6 +17,7 @@ toml = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 dunce = "1.0"
 proc-macro2 = { version = "1.0", features = ["span-locations"], default-features = false }
+quote = "1.0"
 gix = { version = "0.83", default-features = false, features = ["status", "sha1"] }
 glob = "0.3"
 
