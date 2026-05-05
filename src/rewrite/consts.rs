@@ -54,6 +54,16 @@ pub(super) const PRELUDE: &[&str] = &[
     "IntoFuture",
 ];
 
+/// Maximum chain length followed when resolving a `use` alias to its
+/// terminal target. Aliases resolve in O(chain) time and real codebases
+/// rarely exceed two or three hops; this bound only fires on cycles.
+pub(super) const MAX_RESOLVE_DEPTH: usize = 20;
+
+/// Spaces per indentation level when reconstructing a module's indent
+/// string from its scope depth. Used as a fallback when the module body
+/// is empty so we still emit visually plausible imports.
+pub(super) const DEFAULT_INDENT_WIDTH: usize = 4;
+
 pub(super) const FMT_MACROS: &[&str] = &[
     "println",
     "print",

@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{Path as SynPath, UseTree};
 
+use super::consts::MAX_RESOLVE_DEPTH;
+
 pub(super) fn path_str(p: &SynPath) -> String {
     p.segments
         .iter()
@@ -99,7 +101,7 @@ pub(super) fn resolve_path(
     cache: &mut BTreeMap<String, String>,
     depth: usize,
 ) -> String {
-    if depth > 20 {
+    if depth > MAX_RESOLVE_DEPTH {
         return path.to_string(); // cycle protection
     }
     if let Some(resolved) = cache.get(path) {

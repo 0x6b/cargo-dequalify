@@ -10,7 +10,7 @@ use syn::{
 
 use super::{
     attrs::extract_cfg,
-    consts::{FMT_MACROS, PRIMITIVES},
+    consts::{DEFAULT_INDENT_WIDTH, FMT_MACROS, PRIMITIVES},
     defs::collect_defs,
     source::Lines,
     use_tree::{
@@ -312,7 +312,7 @@ impl Visit<'_> for Collector<'_> {
             let indent = items
                 .first()
                 .map(|i| " ".repeat(i.span().start().column))
-                .unwrap_or_else(|| " ".repeat(4 * s.scope.len()));
+                .unwrap_or_else(|| " ".repeat(DEFAULT_INDENT_WIDTH * s.scope.len()));
             let pos = acc
                 .last_use_line
                 .map(|l| s.lines.end(l))
