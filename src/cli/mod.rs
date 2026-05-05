@@ -3,7 +3,7 @@ mod git;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use cargo_dequalify::{Change, Options, process_path};
 use clap::Parser;
 use fmt::run_cargo_fmt;
@@ -32,12 +32,10 @@ pub struct Cli {
 
 pub fn run(cli: Cli) -> Result<()> {
     if cli.write && !cli.allow_dirty {
-        match git_dirty_state(&cli.target) {
-            Ok(true) => bail!("uncommitted changes; commit/stash or use --allow-dirty"),
-            Ok(false) => {}
-            Err(e) => bail!(
-                "could not determine git working-tree status: {e}; pass --allow-dirty to override"
-            ),
+        let dirty = git_dirty_state(&cli.target)
+            .context("could not determine git working-tree status; pass --allow-dirty to override")?;
+        if dirty {
+            bail!("uncommitted changes; commit/stash or use --allow-dirty");
         }
     }
 
