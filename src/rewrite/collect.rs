@@ -48,7 +48,6 @@ pub(super) struct Collector<'a> {
     lines: &'a Lines<'a>,
     pub(super) mappings: BTreeMap<String, String>,
     internal: BTreeSet<String>,
-    depth: usize,
     cfg: BTreeSet<String>,
     /// Stack of locals introduced by the enclosing function/closure frames.
     fn_locals: Vec<BTreeSet<String>>,
@@ -72,7 +71,6 @@ impl<'a> Collector<'a> {
             lines,
             mappings: BTreeMap::new(),
             internal: BTreeSet::new(),
-            depth: 0,
             cfg: BTreeSet::new(),
             fn_locals: Vec::new(),
         }
@@ -116,10 +114,10 @@ impl<'a> Collector<'a> {
     }
 
     /// Run `f` inside a fresh function/closure frame: `mappings` and
-    /// `internal` are saved and restored, depth is bumped, and `locals`
-    /// becomes the new top entry on the locals stack.
+    /// `internal` are saved and restored, and `locals` becomes the new
+    /// top entry on the locals stack. Frame depth is implied by
+    /// `fn_locals.len()`.
     fn with_frame<F: FnOnce(&mut Self)>(&mut self, locals: BTreeSet<String>, f: F) {
-        self.depth += 1;
         let saved_mappings = self.mappings.clone();
         let saved_internal = self.internal.clone();
         self.fn_locals.push(locals);
@@ -127,7 +125,6 @@ impl<'a> Collector<'a> {
         self.fn_locals.pop();
         self.mappings = saved_mappings;
         self.internal = saved_internal;
-        self.depth -= 1;
     }
 
     fn with_fn<F: FnOnce(&mut Self)>(&mut self, sig: &Signature, f: F) {
@@ -241,7 +238,7 @@ impl<'a> Collector<'a> {
 impl Visit<'_> for Collector<'_> {
     fn visit_item_use(&mut self, n: &ItemUse) {
         collect_mappings(&n.tree, &mut self.mappings);
-        if self.depth > 0 && is_internal(&n.tree) {
+        if !self.fn_locals.is_empty() && is_internal(&n.tree) {
             collect_idents(&n.tree, &mut self.internal);
         }
         visit::visit_item_use(self, n);
