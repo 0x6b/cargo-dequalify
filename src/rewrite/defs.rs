@@ -35,6 +35,16 @@ fn item_def_idents(item: &Item) -> Vec<String> {
                 _ => None,
             })
             .collect(),
+        Item::ForeignMod(fm) => fm
+            .items
+            .iter()
+            .filter_map(|fi| match fi {
+                syn::ForeignItem::Fn(f) => Some(f.sig.ident.to_string()),
+                syn::ForeignItem::Static(s) => Some(s.ident.to_string()),
+                syn::ForeignItem::Type(t) => Some(t.ident.to_string()),
+                _ => None,
+            })
+            .collect(),
         _ => vec![],
     }
 }
