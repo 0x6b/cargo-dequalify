@@ -14,7 +14,7 @@ use super::{
     defs::collect_defs,
     source::Lines,
     use_tree::{
-        collect_idents, collect_mappings, has_glob_import, is_internal, resolve_path,
+        collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path,
     },
 };
 
@@ -174,18 +174,18 @@ impl<'a> Collector<'a> {
         if segs.len() < 2 {
             return;
         }
-        let seg_strs: Vec<String> = segs.iter().map(|s| s.ident.to_string()).collect();
-        let first = &seg_strs[0];
-        if self.internal.contains(first) {
+        let first = segs[0].ident.to_string();
+        if self.internal.contains(&first) {
             return;
         }
 
-        let (full, eff) = match self.expand(first, &seg_strs[1..]) {
+        let rest: Vec<String> = segs.iter().skip(1).map(|s| s.ident.to_string()).collect();
+        let (full, eff) = match self.expand(&first, &rest) {
             Some(e) => {
-                let eff = e.split("::").next().unwrap_or(first).to_string();
+                let eff = e.split("::").next().unwrap_or(&first).to_string();
                 (e, eff)
             }
-            None => (seg_strs.join("::"), first.clone()),
+            None => (path_str(path), first.clone()),
         };
 
         let starts_upper = eff.chars().next().is_some_and(|c| c.is_uppercase());
@@ -213,7 +213,7 @@ impl<'a> Collector<'a> {
                 });
                 return;
             }
-        } else if PRIMITIVES.contains(&seg_strs[seg_strs.len() - 1].as_str()) {
+        } else if PRIMITIVES.contains(&rest.last().unwrap().as_str()) {
             return;
         }
 
