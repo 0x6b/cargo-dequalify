@@ -78,7 +78,7 @@ pub(super) fn workspace_crate_roots(cargo_toml: &Path, manifest: &WorkspaceManif
                     vec![pattern]
                 }
             })
-            .filter_map(|p| canonicalize(&p).ok().or(Some(p)))
+            .map(|p| canonicalize(&p).unwrap_or(p))
             .collect()
     };
     let excluded: BTreeSet<PathBuf> = expand(&manifest.exclude);
