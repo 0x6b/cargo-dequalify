@@ -163,6 +163,15 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Record `path` only when it is not behind a `<T as Trait>::…` qualified
+    /// self — the qself form rebinds the leading segments and the simple
+    /// name-based dequalification doesn't apply.
+    fn record_if_unqual(&mut self, qself: Option<&syn::QSelf>, path: &SynPath, is_type: bool) {
+        if qself.is_none() {
+            self.record_path(path, is_type);
+        }
+    }
+
     fn record(&mut self, path: &SynPath, span: (usize, usize), is_type: bool) {
         let segs = &path.segments;
         if segs.len() < 2 {
@@ -281,16 +290,12 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_expr_path(&mut self, n: &ExprPath) {
-        if n.qself.is_none() {
-            self.record_path(&n.path, false);
-        }
+        self.record_if_unqual(n.qself.as_ref(), &n.path, false);
         visit::visit_expr_path(self, n);
     }
 
     fn visit_expr_struct(&mut self, n: &ExprStruct) {
-        if n.qself.is_none() {
-            self.record_path(&n.path, true);
-        }
+        self.record_if_unqual(n.qself.as_ref(), &n.path, true);
         visit::visit_expr_struct(self, n);
     }
 
@@ -342,9 +347,7 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_type_path(&mut self, n: &TypePath) {
-        if n.qself.is_none() {
-            self.record_path(&n.path, true);
-        }
+        self.record_if_unqual(n.qself.as_ref(), &n.path, true);
         visit::visit_type_path(self, n);
     }
 
@@ -357,20 +360,15 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_pat_struct(&mut self, n: &PatStruct) {
-        if n.qself.is_none() {
-            self.record_path(&n.path, true);
-        }
+        self.record_if_unqual(n.qself.as_ref(), &n.path, true);
         visit::visit_pat_struct(self, n);
     }
 
     fn visit_pat_tuple_struct(&mut self, n: &PatTupleStruct) {
-        if n.qself.is_none() {
-            // is_type=false so the type-method split treats `Foo::Bar(x)`
-            // as importing `Foo` and rewriting to `Foo::Bar(x)`, matching
-            // how the call form `Foo::Bar(x)` is handled in expression
-            // position.
-            self.record_path(&n.path, false);
-        }
+        // is_type=false so the type-method split treats `Foo::Bar(x)` as
+        // importing `Foo` and rewriting to `Foo::Bar(x)`, matching how the
+        // call form `Foo::Bar(x)` is handled in expression position.
+        self.record_if_unqual(n.qself.as_ref(), &n.path, false);
         visit::visit_pat_tuple_struct(self, n);
     }
 }
