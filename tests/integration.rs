@@ -1772,3 +1772,25 @@ fn parse(content: &str) {
         "Should dequalify inner path but preserve turbofish, got:\n{output}"
     );
 }
+
+#[test]
+fn test_insert_below_inner_attrs_when_no_use() {
+    // When a file has no `use` statements, new imports must be inserted after
+    // any inner attributes / module doc comments. Otherwise the resulting
+    // file places a `use` above `#![…]` / `//! …`, which is invalid Rust.
+    let input = r#"#![allow(dead_code)]
+//! Module doc.
+
+fn main() {
+    std::fs::read_to_string("foo");
+}
+"#;
+    let output = process_source(input, &[]);
+    let attr_pos = output.find("#![allow(dead_code)]").unwrap();
+    let doc_pos = output.find("//! Module doc.").unwrap();
+    let use_pos = output.find("use std::fs::read_to_string;").unwrap();
+    assert!(
+        use_pos > attr_pos && use_pos > doc_pos,
+        "use must come after inner attrs and module docs, got:\n{output}"
+    );
+}

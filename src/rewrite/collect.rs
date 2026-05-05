@@ -388,7 +388,15 @@ pub(super) fn collect_occurrences<'a>(
 
 fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
     let mut imports = BTreeSet::new();
-    let mut pos = 0;
+    // Default below any inner attributes (`#![…]`) and module doc comments
+    // (`//! …`, lowered to `#![doc = "…"]`) so a fresh import is never
+    // inserted above them — which would be invalid Rust.
+    let mut pos = ast
+        .attrs
+        .iter()
+        .map(|a| lines.end(a.span().end().line))
+        .max()
+        .unwrap_or(0);
     let mut has_glob = false;
     let mut mappings = BTreeMap::new();
     ast.items
