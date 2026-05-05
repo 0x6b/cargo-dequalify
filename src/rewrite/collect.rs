@@ -14,7 +14,7 @@ use super::{
     defs::collect_defs,
     source::Lines,
     use_tree::{
-        collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path,
+        collect_idents, collect_mappings, has_glob_import, is_internal, resolve_path,
     },
 };
 
@@ -177,16 +177,19 @@ impl<'a> Collector<'a> {
         if segs.len() < 2 {
             return;
         }
-        let first = segs[0].ident.to_string();
-        if self.internal.contains(&first) {
+        let seg_strs: Vec<String> = segs.iter().map(|s| s.ident.to_string()).collect();
+        let first = &seg_strs[0];
+        if self.internal.contains(first) {
             return;
         }
 
-        let rest: Vec<String> = segs.iter().skip(1).map(|s| s.ident.to_string()).collect();
-        let (full, eff) = self
-            .expand(&first, &rest)
-            .map(|e| (e.clone(), e.split("::").next().unwrap_or(&first).to_string()))
-            .unwrap_or_else(|| (path_str(path), first));
+        let (full, eff) = match self.expand(first, &seg_strs[1..]) {
+            Some(e) => {
+                let eff = e.split("::").next().unwrap_or(first).to_string();
+                (e, eff)
+            }
+            None => (seg_strs.join("::"), first.clone()),
+        };
 
         let starts_upper = eff.chars().next().is_some_and(|c| c.is_uppercase());
         if eff == "Self" || starts_upper || self.ignore.contains(&eff) {
@@ -213,11 +216,8 @@ impl<'a> Collector<'a> {
                 });
                 return;
             }
-        } else {
-            let last = segs.last().map(|s| s.ident.to_string()).unwrap_or_default();
-            if PRIMITIVES.contains(&last.as_str()) {
-                return;
-            }
+        } else if PRIMITIVES.contains(&seg_strs[seg_strs.len() - 1].as_str()) {
+            return;
         }
 
         self.occs.push(Occurrence {
