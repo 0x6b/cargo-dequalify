@@ -41,11 +41,11 @@ impl Strategy {
     }
 
     pub(super) fn repl(&self) -> String {
-        if self.len == self.segs.len() {
-            self.segs.last().unwrap().clone()
-        } else {
-            format!("{}::{}", self.segs[self.len - 1], self.segs[self.len..].join("::"))
-        }
+        // `segs[len-1..]` is the last imported segment plus any unimported
+        // suffix; joining with "::" yields the call-site replacement. When
+        // no truncation happened (`len == segs.len()`) the slice is just
+        // the final segment.
+        self.segs[self.len - 1..].join("::")
     }
 }
 
