@@ -302,32 +302,27 @@ impl Visit<'_> for Collector<'_> {
             };
             s.scope.push(n.ident.to_string());
             let scope = s.cur_scope();
-            let mut last_use = None;
-            let mut imports = BTreeSet::new();
-            let mut has_glob = false;
-            let mut mappings = BTreeMap::new();
-            items
-                .iter()
-                .filter_map(|i| match i {
-                    Item::Use(u) => Some(u),
-                    _ => None,
-                })
-                .for_each(|u| {
-                    last_use = Some(u.span().end().line);
-                    collect_idents(&u.tree, &mut imports);
-                    has_glob |= has_glob_import(&u.tree);
-                    collect_mappings(&u.tree, &mut mappings);
-                });
+            let acc = accumulate_uses(items);
             let defs = collect_defs(items);
             let indent = items
                 .first()
                 .map(|i| " ".repeat(i.span().start().column))
                 .unwrap_or_else(|| " ".repeat(4 * s.scope.len()));
-            let pos = last_use
+            let pos = acc
+                .last_use_line
                 .map(|l| s.lines.end(l))
                 .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
-            s.scopes
-                .insert(scope, ScopeInfo { pos, imports, indent, has_glob, mappings, defs });
+            s.scopes.insert(
+                scope,
+                ScopeInfo {
+                    pos,
+                    imports: acc.imports,
+                    indent,
+                    has_glob: acc.has_glob,
+                    mappings: acc.mappings,
+                    defs,
+                },
+            );
             visit::visit_item_mod(s, n);
             s.scope.pop();
         });
@@ -416,38 +411,54 @@ pub(super) fn collect_occurrences<'a>(
 }
 
 fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
-    let mut imports = BTreeSet::new();
+    let acc = accumulate_uses(&ast.items);
     // Default below any inner attributes (`#![…]`) and module doc comments
     // (`//! …`, lowered to `#![doc = "…"]`) so a fresh import is never
     // inserted above them — which would be invalid Rust.
-    let mut pos = ast
+    let attr_end = ast
         .attrs
         .iter()
         .map(|a| lines.end(a.span().end().line))
         .max()
         .unwrap_or(0);
-    let mut has_glob = false;
-    let mut mappings = BTreeMap::new();
-    ast.items
+    let pos = acc.last_use_line.map(|l| lines.end(l)).unwrap_or(attr_end);
+    ScopeInfo {
+        pos,
+        imports: acc.imports,
+        indent: String::new(),
+        has_glob: acc.has_glob,
+        mappings: acc.mappings,
+        defs: collect_defs(&ast.items),
+    }
+}
+
+struct UseAccumulator {
+    imports: BTreeSet<String>,
+    has_glob: bool,
+    mappings: BTreeMap<String, String>,
+    last_use_line: Option<usize>,
+}
+
+fn accumulate_uses(items: &[Item]) -> UseAccumulator {
+    let mut acc = UseAccumulator {
+        imports: BTreeSet::new(),
+        has_glob: false,
+        mappings: BTreeMap::new(),
+        last_use_line: None,
+    };
+    items
         .iter()
         .filter_map(|i| match i {
             Item::Use(u) => Some(u),
             _ => None,
         })
         .for_each(|u| {
-            pos = lines.end(u.span().end().line);
-            collect_idents(&u.tree, &mut imports);
-            has_glob |= has_glob_import(&u.tree);
-            collect_mappings(&u.tree, &mut mappings);
+            acc.last_use_line = Some(u.span().end().line);
+            collect_idents(&u.tree, &mut acc.imports);
+            acc.has_glob |= has_glob_import(&u.tree);
+            collect_mappings(&u.tree, &mut acc.mappings);
         });
-    ScopeInfo {
-        pos,
-        imports,
-        indent: String::new(),
-        has_glob,
-        mappings,
-        defs: collect_defs(&ast.items),
-    }
+    acc
 }
 
 /// Rewrite each value of `map` so its first segment is no longer an alias
