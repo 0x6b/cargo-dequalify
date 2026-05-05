@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use syn::{
     Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
     ItemMod, ItemUse, Local, Macro, Pat, PatStruct, PatTupleStruct, Path as SynPath, Signature,
-    TraitBound, TypePath,
+    TraitBound, TraitItemFn, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -244,6 +244,10 @@ impl Visit<'_> for Collector<'_> {
 
     fn visit_impl_item_fn(&mut self, n: &ImplItemFn) {
         self.with_cfg(&n.attrs, |s| s.with_fn(&n.sig, |s| visit::visit_impl_item_fn(s, n)));
+    }
+
+    fn visit_trait_item_fn(&mut self, n: &TraitItemFn) {
+        self.with_cfg(&n.attrs, |s| s.with_fn(&n.sig, |s| visit::visit_trait_item_fn(s, n)));
     }
 
     fn visit_expr_closure(&mut self, n: &ExprClosure) {

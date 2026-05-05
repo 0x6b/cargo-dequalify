@@ -1774,6 +1774,25 @@ fn parse(content: &str) {
 }
 
 #[test]
+fn test_trait_default_fn_param_blocks_import() {
+    // A parameter inside a trait's default-impl body must shadow potential
+    // short-name imports the same way it would in inherent or impl methods.
+    let input = r#"
+trait T {
+    fn run(&self, read_to_string: u32) {
+        std::fs::read_to_string("x").unwrap();
+        let _ = read_to_string;
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        !output.contains("use std::fs::read_to_string;"),
+        "must not import a short name colliding with a default-fn param, got:\n{output}"
+    );
+}
+
+#[test]
 fn test_pat_path_match_arm() {
     let input = r#"
 mod inner {
