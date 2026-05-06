@@ -357,7 +357,10 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_pat_struct(&mut self, n: &PatStruct) {
-        self.record_if_unqual(n.qself.as_ref(), &n.path, true);
+        // is_type=false so an enum struct-variant `Foo::Bar { x }` imports
+        // `Foo` and keeps the call site `Foo::Bar { x }`, consistent with the
+        // tuple-struct and unit-variant forms.
+        self.record_if_unqual(n.qself.as_ref(), &n.path, false);
         visit::visit_pat_struct(self, n);
     }
 

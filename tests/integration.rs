@@ -1867,6 +1867,52 @@ fn x_of(p: inner::Point) -> i32 {
 }
 
 #[test]
+fn test_enum_variants_consistent_in_match() {
+    // All four match arms should be left in `Type::Variant` form, since the
+    // enclosing type `Commands` is already imported. The struct-variant arms
+    // must NOT be deepened to bare `PrepareForNewRelease` — that would diverge
+    // from how unit variants and tuple-struct variants are handled.
+    let input = r#"
+mod args {
+    pub enum Commands {
+        PrepareForNewRelease { redash_queries_path: String },
+        DownloadRedashQueries { output_path: String },
+        UpdateM43PatchVersion,
+        UpdateSubmodules,
+    }
+}
+
+use crate::args::Commands;
+
+fn execute(command: Commands) {
+    match command {
+        Commands::PrepareForNewRelease { redash_queries_path: _ } => {}
+        Commands::DownloadRedashQueries { output_path: _ } => {}
+        Commands::UpdateM43PatchVersion => {}
+        Commands::UpdateSubmodules => {}
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        !output.contains("use crate::args::Commands::PrepareForNewRelease;"),
+        "must not deepen import past the type, got:\n{output}"
+    );
+    assert!(
+        !output.contains("use crate::args::Commands::DownloadRedashQueries;"),
+        "must not deepen import past the type, got:\n{output}"
+    );
+    ["PrepareForNewRelease", "DownloadRedashQueries", "UpdateM43PatchVersion", "UpdateSubmodules"]
+        .iter()
+        .for_each(|v| {
+            assert!(
+                output.contains(&format!("Commands::{v}")),
+                "expected Commands::{v} to remain qualified, got:\n{output}"
+            );
+        });
+}
+
+#[test]
 fn test_trait_bound_dequalify() {
     // Qualified paths in generic constraints should be dequalified.
     let input = r#"
@@ -1947,3 +1993,4 @@ fn main() {
         "use must come after inner attrs and module docs, got:\n{output}"
     );
 }
+
