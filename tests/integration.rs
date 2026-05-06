@@ -1994,3 +1994,56 @@ fn main() {
     );
 }
 
+#[test]
+fn test_existing_alias_already_optimal() {
+    // When sibling paths already use an existing alias (`factoring_models` from
+    // `use m43::commands::factoring_models;`), the resolver previously climbed
+    // past that alias to import the grandparent `commands`, rewriting one call
+    // to `commands::factoring_models::handle` and leaving the others. The
+    // alias level is already the optimal short form — no change should occur.
+    let input = r#"
+use m43::commands::factoring_models;
+use m43::commands::factoring_routes;
+use m43::commands::snowflake;
+
+fn main() {
+    let cmd = ();
+    factoring_models::handle(cmd);
+    factoring_routes::handle(cmd);
+    snowflake::handle(cmd);
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &Options::default()).unwrap();
+    assert!(matches!(changed, Change::None), "expected no change");
+}
+
+#[test]
+fn test_parent_import_covers_sibling_calls() {
+    // Three fully-qualified sibling paths whose short names collide with
+    // local `mod` declarations must all rewrite via the same parent import,
+    // not just the alphabetically-first one.
+    let input = r#"
+mod factoring_models;
+mod factoring_routes;
+mod snowflake;
+
+fn main() {
+    let cmd = ();
+    m43::commands::factoring_models::handle(cmd);
+    m43::commands::factoring_routes::handle(cmd);
+    m43::commands::snowflake::handle(cmd);
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output.matches("use m43::commands;").count(), 1);
+    assert!(output.contains("commands::factoring_models::handle(cmd)"));
+    assert!(output.contains("commands::factoring_routes::handle(cmd)"));
+    assert!(output.contains("commands::snowflake::handle(cmd)"));
+    assert!(!output.contains("m43::commands::factoring_models::handle"));
+    assert!(!output.contains("m43::commands::factoring_routes::handle"));
+    assert!(!output.contains("m43::commands::snowflake::handle"));
+}
+
