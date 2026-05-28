@@ -11,5 +11,5 @@ fn main() -> Result<()> {
     if raw_args.get(1).is_some_and(|s| s == "dequalify") {
         raw_args.remove(1);
     }
-    run(Cli::parse_from(&raw_args))
+    run(&Cli::parse_from(&raw_args))
 }

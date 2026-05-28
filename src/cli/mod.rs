@@ -30,10 +30,11 @@ pub struct Cli {
     fmt: Option<Option<String>>,
 }
 
-pub fn run(cli: Cli) -> Result<()> {
+pub fn run(cli: &Cli) -> Result<()> {
     if cli.write && !cli.allow_dirty {
-        let dirty = git_dirty_state(&cli.target)
-            .context("could not determine git working-tree status; pass --allow-dirty to override")?;
+        let dirty = git_dirty_state(&cli.target).context(
+            "could not determine git working-tree status; pass --allow-dirty to override",
+        )?;
         if dirty {
             bail!("uncommitted changes; commit/stash or use --allow-dirty");
         }

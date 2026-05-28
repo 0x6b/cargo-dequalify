@@ -1834,14 +1834,8 @@ fn name(c: inner::Color) -> &'static str {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use inner::Color;"),
-        "expected import, got:\n{output}"
-    );
-    assert!(
-        output.contains("Color::Red"),
-        "expected pat path rewrite, got:\n{output}"
-    );
+    assert!(output.contains("use inner::Color;"), "expected import, got:\n{output}");
+    assert!(output.contains("Color::Red"), "expected pat path rewrite, got:\n{output}");
 }
 
 #[test]
@@ -1859,10 +1853,7 @@ fn show(n: u32) {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use inner::Msg;"),
-        "expected import, got:\n{output}"
-    );
+    assert!(output.contains("use inner::Msg;"), "expected import, got:\n{output}");
     assert!(
         output.contains("Msg::Hello(n)"),
         "expected dequalified tuple-struct pat, got:\n{output}"
@@ -1882,10 +1873,7 @@ fn x_of(p: inner::Point) -> i32 {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use inner::Point;"),
-        "expected import, got:\n{output}"
-    );
+    assert!(output.contains("use inner::Point;"), "expected import, got:\n{output}");
     assert!(
         output.contains("let Point { x, .. }"),
         "expected dequalified struct pat, got:\n{output}"
@@ -1947,14 +1935,8 @@ fn print<T: std::fmt::Display>(x: T) {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use std::fmt::Display;"),
-        "expected import, got:\n{output}"
-    );
-    assert!(
-        output.contains("T: Display"),
-        "expected dequalified bound, got:\n{output}"
-    );
+    assert!(output.contains("use std::fmt::Display;"), "expected import, got:\n{output}");
+    assert!(output.contains("T: Display"), "expected dequalified bound, got:\n{output}");
 }
 
 #[test]
@@ -1968,14 +1950,8 @@ where
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use std::default::Default;"),
-        "expected import, got:\n{output}"
-    );
-    assert!(
-        output.contains("T: Default"),
-        "expected dequalified where bound, got:\n{output}"
-    );
+    assert!(output.contains("use std::default::Default;"), "expected import, got:\n{output}");
+    assert!(output.contains("T: Default"), "expected dequalified where bound, got:\n{output}");
 }
 
 #[test]
@@ -1988,10 +1964,7 @@ fn main() {
 }
 "#;
     let output = process_source(input, &[]);
-    assert!(
-        output.contains("use std::fs::read_to_string;"),
-        "expected import, got:\n{output}"
-    );
+    assert!(output.contains("use std::fs::read_to_string;"), "expected import, got:\n{output}");
     assert!(
         output.contains("let f = read_to_string;"),
         "expected bare path to be rewritten, got:\n{output}"
@@ -2072,4 +2045,3 @@ fn main() {
     assert!(!output.contains("m43::commands::factoring_routes::handle"));
     assert!(!output.contains("m43::commands::snowflake::handle"));
 }
-

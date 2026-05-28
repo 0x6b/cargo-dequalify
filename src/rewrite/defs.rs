@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use syn::{
-    File, Item, ItemConst, ItemEnum, ItemImpl, ItemMod, ItemStatic, ItemStruct, ItemTrait,
-    ItemType, ItemUnion, Path as SynPath, TypePath,
+    File, ForeignItem, ImplItem, Item, ItemConst, ItemEnum, ItemImpl, ItemMod, ItemStatic,
+    ItemStruct, ItemTrait, ItemType, ItemUnion, Path as SynPath, TypePath,
     visit::{Visit, visit_path, visit_type_path},
 };
 
@@ -29,9 +29,9 @@ fn item_def_idents(item: &Item) -> Vec<String> {
         Item::Impl(ItemImpl { items, .. }) => items
             .iter()
             .filter_map(|ii| match ii {
-                syn::ImplItem::Fn(f) => Some(f.sig.ident.to_string()),
-                syn::ImplItem::Const(c) => Some(c.ident.to_string()),
-                syn::ImplItem::Type(t) => Some(t.ident.to_string()),
+                ImplItem::Fn(f) => Some(f.sig.ident.to_string()),
+                ImplItem::Const(c) => Some(c.ident.to_string()),
+                ImplItem::Type(t) => Some(t.ident.to_string()),
                 _ => None,
             })
             .collect(),
@@ -39,9 +39,9 @@ fn item_def_idents(item: &Item) -> Vec<String> {
             .items
             .iter()
             .filter_map(|fi| match fi {
-                syn::ForeignItem::Fn(f) => Some(f.sig.ident.to_string()),
-                syn::ForeignItem::Static(s) => Some(s.ident.to_string()),
-                syn::ForeignItem::Type(t) => Some(t.ident.to_string()),
+                ForeignItem::Fn(f) => Some(f.sig.ident.to_string()),
+                ForeignItem::Static(s) => Some(s.ident.to_string()),
+                ForeignItem::Type(t) => Some(t.ident.to_string()),
                 _ => None,
             })
             .collect(),

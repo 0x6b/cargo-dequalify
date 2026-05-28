@@ -63,7 +63,10 @@ pub(super) fn resolve(
     mappings: &BTreeMap<String, String>,
 ) -> BTreeMap<String, Strategy> {
     let mut strats: Vec<Strategy> = paths.iter().map(|p| Strategy::new(p)).collect();
-    strats.iter_mut().filter(|s| s.already_imported(mappings)).for_each(|s| s.exists = true);
+    strats
+        .iter_mut()
+        .filter(|s| s.already_imported(mappings))
+        .for_each(|s| s.exists = true);
     loop {
         let groups: BTreeMap<String, Vec<usize>> = strats
             .iter()

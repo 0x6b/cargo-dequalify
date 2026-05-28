@@ -20,8 +20,7 @@ pub fn process_path(path: &Path, options: &Options) -> Result<ProcessOutcome> {
     // Canonicalize once here so downstream code can rely on canonical paths
     // when comparing roots, members, and excludes. Also gives library
     // consumers a useful error if the target doesn't exist.
-    let root = canonicalize(path)
-        .with_context(|| format!("canonicalize {}", path.display()))?;
+    let root = canonicalize(path).with_context(|| format!("canonicalize {}", path.display()))?;
     let cargo_toml = find_cargo_toml(&root)?;
     let manifest = load_workspace(&cargo_toml)?;
     let workspace_root = cargo_toml.parent().unwrap_or(Path::new(".")).to_path_buf();

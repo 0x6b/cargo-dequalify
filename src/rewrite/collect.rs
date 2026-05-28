@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
-    Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, ImplItemFn, Item, ItemFn, ItemImpl,
-    ItemMod, ItemUse, Local, Macro, Pat, PatStruct, PatTupleStruct, Path as SynPath, Signature,
-    TraitBound, TraitItemFn, TypePath,
+    Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, FnArg, ImplItemFn, Item, ItemFn,
+    ItemImpl, ItemMod, ItemUse, Local, Macro, Pat, PatStruct, PatTupleStruct, Path as SynPath,
+    QSelf, Signature, TraitBound, TraitItemFn, TypePath,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -132,7 +132,7 @@ impl<'a> Collector<'a> {
         sig.inputs
             .iter()
             .filter_map(|i| match i {
-                syn::FnArg::Typed(t) => Some(&t.pat),
+                FnArg::Typed(t) => Some(&t.pat),
                 _ => None,
             })
             .for_each(|p| collect_pat(p, &mut locals));
@@ -163,7 +163,7 @@ impl<'a> Collector<'a> {
     /// Record `path` only when it is not behind a `<T as Trait>::…` qualified
     /// self — the qself form rebinds the leading segments and the simple
     /// name-based dequalification doesn't apply.
-    fn record_if_unqual(&mut self, qself: Option<&syn::QSelf>, path: &SynPath, is_type: bool) {
+    fn record_if_unqual(&mut self, qself: Option<&QSelf>, path: &SynPath, is_type: bool) {
         if qself.is_none() {
             self.record_path(path, is_type);
         }
@@ -188,7 +188,7 @@ impl<'a> Collector<'a> {
             None => (path_str(path), first.clone()),
         };
 
-        let starts_upper = eff.chars().next().is_some_and(|c| c.is_uppercase());
+        let starts_upper = eff.chars().next().is_some_and(char::is_uppercase);
         if eff == "Self" || starts_upper || self.ignore.contains(&eff) {
             return;
         }
@@ -196,7 +196,7 @@ impl<'a> Collector<'a> {
         let parts: Vec<&str> = full.split("::").collect();
         if !is_type {
             let parent = parts.get(parts.len().saturating_sub(2)).unwrap_or(&"");
-            let is_type_method = parent.chars().next().is_some_and(|c| c.is_uppercase());
+            let is_type_method = parent.chars().next().is_some_and(char::is_uppercase);
             if PRIMITIVES.contains(parent) {
                 return;
             }
@@ -282,7 +282,7 @@ impl Visit<'_> for Collector<'_> {
             if let Some((_, path, _)) = &n.trait_ {
                 s.record_path(path, true);
             }
-            visit::visit_item_impl(s, n)
+            visit::visit_item_impl(s, n);
         });
     }
 
@@ -306,14 +306,13 @@ impl Visit<'_> for Collector<'_> {
             let scope = s.cur_scope();
             let acc = accumulate_uses(items);
             let defs = collect_defs(items);
-            let indent = items
-                .first()
-                .map(|i| " ".repeat(i.span().start().column))
-                .unwrap_or_else(|| " ".repeat(DEFAULT_INDENT_WIDTH * s.scope.len()));
+            let indent = items.first().map_or_else(
+                || " ".repeat(DEFAULT_INDENT_WIDTH * s.scope.len()),
+                |i| " ".repeat(i.span().start().column),
+            );
             let pos = acc
                 .last_use_line
-                .map(|l| s.lines.end(l))
-                .unwrap_or_else(|| s.lines.end(brace.span.open().end().line));
+                .map_or_else(|| s.lines.end(brace.span.open().end().line), |l| s.lines.end(l));
             s.scopes.insert(
                 scope,
                 ScopeInfo {
@@ -419,7 +418,7 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
         .map(|a| lines.end(a.span().end().line))
         .max()
         .unwrap_or(0);
-    let pos = acc.last_use_line.map(|l| lines.end(l)).unwrap_or(attr_end);
+    let pos = acc.last_use_line.map_or(attr_end, |l| lines.end(l));
     ScopeInfo {
         pos,
         imports: acc.imports,

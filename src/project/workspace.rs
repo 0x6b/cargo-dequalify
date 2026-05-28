@@ -56,10 +56,17 @@ pub(super) fn load_workspace(path: &Path) -> Result<WorkspaceManifest> {
     members.dedup();
     exclude.sort();
     exclude.dedup();
-    Ok(WorkspaceManifest { virtual_root: parsed.package.is_none(), members, exclude })
+    Ok(WorkspaceManifest {
+        virtual_root: parsed.package.is_none(),
+        members,
+        exclude,
+    })
 }
 
-pub(super) fn workspace_crate_roots(cargo_toml: &Path, manifest: &WorkspaceManifest) -> Vec<PathBuf> {
+pub(super) fn workspace_crate_roots(
+    cargo_toml: &Path,
+    manifest: &WorkspaceManifest,
+) -> Vec<PathBuf> {
     let root = cargo_toml.parent().unwrap_or(Path::new("."));
     let expand = |patterns: &[String]| -> BTreeSet<PathBuf> {
         patterns
