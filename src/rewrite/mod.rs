@@ -49,7 +49,7 @@ pub fn process_file(path: &Path, options: &Options) -> Result<Change> {
         return Ok(Change::None);
     }
 
-    let edits = build_edits(&c, &ast);
+    let edits = build_edits(&c, &ast, &src);
     if edits.is_empty() {
         return Ok(Change::None);
     }

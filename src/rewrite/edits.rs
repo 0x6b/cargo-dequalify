@@ -22,7 +22,7 @@ pub(super) struct Edit {
     text: String,
 }
 
-pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
+pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let unqualified = collect_unqualified_names(ast);
     let by_scope: BTreeMap<&str, Vec<&Occurrence>> =
@@ -57,14 +57,21 @@ pub(super) fn build_edits(c: &Collector, ast: &File) -> Vec<Edit> {
         occs.iter()
             .filter_map(|o| strats.get(&o.path).map(|s| (o, s)))
             .for_each(|(o, s)| {
-                if let Some(u) = s.use_stmt() {
-                    by_cfg.entry(o.cfg.clone()).or_default().insert(u);
-                }
                 let text = if o.suffix.is_empty() {
                     s.repl()
                 } else {
                     format!("{}::{}", s.repl(), o.suffix)
                 };
+                // Skip no-op rewrites: when the replacement equals the original
+                // source, the short name is already in scope at the call site
+                // (e.g. via a function-local `use` that `resolve` cannot see),
+                // so a module-level import would be dead.
+                if src.get(o.span.0..o.span.1) == Some(text.as_str()) {
+                    return;
+                }
+                if let Some(u) = s.use_stmt() {
+                    by_cfg.entry(o.cfg.clone()).or_default().insert(u);
+                }
                 edits.push(Edit { range: o.span.0..o.span.1, text });
             });
 

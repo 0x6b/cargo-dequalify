@@ -1008,6 +1008,32 @@ mod nested {
 }
 
 #[test]
+fn test_local_leaf_import_used_short_adds_no_module_import() {
+    // A local `use` that brings a type's leaf name into scope, used in its
+    // short form, must not produce a redundant module-level import. The call
+    // site is already the desired short form, so the local `use` covers it and
+    // a module-level import would be dead. `SshTunnel` also has a module-level
+    // import; `TunnelConfig` is imported only locally.
+    let input = r#"
+use ssh_tunnel::SshTunnel;
+
+fn establish() {
+    use ssh_tunnel::{SshTunnel, TunnelConfig};
+    let _ = TunnelConfig::new();
+    let _ = SshTunnel::new();
+}
+"#;
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(input.as_bytes()).unwrap();
+    let path = file.path().to_path_buf();
+    let changed = process_file(&path, &Options::default()).unwrap();
+    assert!(
+        matches!(changed, Change::None),
+        "expected no changes; the local use already covers the short names"
+    );
+}
+
+#[test]
 fn test_type_path_simple() {
     // Simple type path should be dequalified
     let input = r#"
