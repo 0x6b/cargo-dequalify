@@ -78,15 +78,11 @@ If the parent module name also conflicts, it goes up another level. If no valid 
 
 ## Limitations
 
-- Skips type-associated functions (e.g., `Vec::new()`, `String::from()`)
+- Skips type-associated functions when the type is the leading segment (e.g., `Vec::new()`, `String::from()`). For `module::Type::method()`, the module path is shortened instead (imports `module::Type`, keeps `Type::method()`).
 - Skips `Self::` paths
 - Skips primitive type methods (e.g., `str::len()`)
-- Only descends into the arguments of formatting macros (`println!`,
-  `format!`, `write!`, `panic!`, log macros, etc.). Qualified paths inside
-  other macro invocations (`vec![...]`, `tokio::select!{...}`, `assert!`,
-  `matches!`, …) are left unchanged.
-- Skips paths whose non-last segments carry turbofish generics (e.g.,
-  `parser::<YAML>::parse`); these would lose their generics if rewritten.
+- Only descends into the arguments of formatting macros (`println!`, `format!`, `write!`, `panic!`, log macros, etc.). Qualified paths inside other macro invocations (`vec![...]`, `tokio::select!{...}`, `assert!`, `matches!`, …) are left unchanged.
+- Skips paths whose non-last segments carry turbofish generics (e.g., `parser::<YAML>::parse`); these would lose their generics if rewritten.
 
 ## License
 
