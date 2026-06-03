@@ -47,6 +47,19 @@ pub(super) fn collect_idents(tree: &UseTree, out: &mut BTreeSet<String>) {
     });
 }
 
+/// True if `tree` contains a `use super::*;` glob (prefix exactly `super`).
+/// Such a glob re-exports the parent module's names into this scope, so its
+/// imports become visible here under their short names.
+pub(super) fn has_super_glob(tree: &UseTree) -> bool {
+    let mut found = false;
+    walk_use_tree(tree, &mut Vec::new(), &mut |prefix, leaf| {
+        if matches!(leaf, UseTree::Glob(_)) && prefix.len() == 1 && prefix[0] == "super" {
+            found = true;
+        }
+    });
+    found
+}
+
 pub(super) fn has_glob_import(tree: &UseTree) -> bool {
     match tree {
         UseTree::Glob(_) => true,

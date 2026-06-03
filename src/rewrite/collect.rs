@@ -14,7 +14,8 @@ use super::{
     defs::collect_defs,
     source::Lines,
     use_tree::{
-        collect_idents, collect_mappings, has_glob_import, is_internal, path_str, resolve_path,
+        collect_idents, collect_mappings, has_glob_import, has_super_glob, is_internal, path_str,
+        resolve_path,
     },
 };
 
@@ -38,6 +39,9 @@ pub(super) struct ScopeInfo {
     pub(super) has_glob: bool,
     pub(super) mappings: BTreeMap<String, String>,
     pub(super) defs: BTreeSet<String>,
+    /// True if this scope contains `use super::*;`, which re-exports the
+    /// parent scope's imports under their short names.
+    pub(super) super_glob: bool,
 }
 
 pub(super) struct Collector<'a> {
@@ -322,6 +326,7 @@ impl Visit<'_> for Collector<'_> {
                     has_glob: acc.has_glob,
                     mappings: acc.mappings,
                     defs,
+                    super_glob: acc.super_glob,
                 },
             );
             visit::visit_item_mod(s, n);
@@ -401,9 +406,28 @@ pub(super) fn collect_occurrences<'a>(
     c.occs
         .iter_mut()
         .for_each(|o| o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0));
-    c.scopes
-        .values_mut()
-        .for_each(|info| resolve_mappings(&mut info.mappings, &mut cache));
+    // Resolve each scope's mappings shallow-to-deep. A scope with `use super::*`
+    // re-exports its parent's imports under their short names, so it inherits
+    // the parent's (already-resolved) mappings. Without this, a call to an
+    // already-imported short name in such a scope looks like a fresh import that
+    // collides with the glob name, and `resolve` mis-escalates to a parent-module
+    // import whose relative path is anchored to the wrong scope.
+    let mut keys: Vec<String> = c.scopes.keys().cloned().collect();
+    keys.sort_by_key(|k| if k.is_empty() { 0 } else { k.matches("::").count() + 1 });
+    for key in keys {
+        if c.scopes.get(&key).is_some_and(|i| i.super_glob) {
+            let parent = key.rsplit_once("::").map_or("", |(p, _)| p);
+            if let Some(parent_mappings) = c.scopes.get(parent).map(|i| i.mappings.clone()) {
+                let info = c.scopes.get_mut(&key).expect("key came from c.scopes");
+                parent_mappings.into_iter().for_each(|(k, v)| {
+                    info.mappings.entry(k).or_insert(v);
+                });
+            }
+        }
+        if let Some(info) = c.scopes.get_mut(&key) {
+            resolve_mappings(&mut info.mappings, &mut cache);
+        }
+    }
     c
 }
 
@@ -426,12 +450,16 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
         has_glob: acc.has_glob,
         mappings: acc.mappings,
         defs: collect_defs(&ast.items),
+        // The file scope's parent is outside this file, so its mappings are
+        // unknown; never inherit across the file boundary.
+        super_glob: false,
     }
 }
 
 struct UseAccumulator {
     imports: BTreeSet<String>,
     has_glob: bool,
+    super_glob: bool,
     mappings: BTreeMap<String, String>,
     last_use_line: Option<usize>,
 }
@@ -440,6 +468,7 @@ fn accumulate_uses(items: &[Item]) -> UseAccumulator {
     let mut acc = UseAccumulator {
         imports: BTreeSet::new(),
         has_glob: false,
+        super_glob: false,
         mappings: BTreeMap::new(),
         last_use_line: None,
     };
@@ -453,6 +482,7 @@ fn accumulate_uses(items: &[Item]) -> UseAccumulator {
             acc.last_use_line = Some(u.span().end().line);
             collect_idents(&u.tree, &mut acc.imports);
             acc.has_glob |= has_glob_import(&u.tree);
+            acc.super_glob |= has_super_glob(&u.tree);
             collect_mappings(&u.tree, &mut acc.mappings);
         });
     acc

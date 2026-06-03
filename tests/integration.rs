@@ -2045,3 +2045,36 @@ fn main() {
     assert!(!output.contains("m43::commands::factoring_routes::handle"));
     assert!(!output.contains("m43::commands::snowflake::handle"));
 }
+
+#[test]
+fn test_glob_reexported_type_in_nested_scope_is_noop() {
+    // `Png` is imported at file scope and re-exported into `mod tests` via
+    // `use super::*`. The call `Png::new()` is already in its short, in-scope
+    // form, so the tool must leave it alone. It must NOT escalate to a
+    // parent-module import — `use super::inner;` is relative to the file module
+    // and would be unresolved inside `mod tests` (`super` there is the file).
+    let input = r#"
+use super::inner::Png;
+
+fn use_type(_p: &Png) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t() {
+        let _png = Png::new();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(
+        !output.contains("use super::inner;"),
+        "must not emit a parent-module import relative to the wrong scope, got:\n{output}"
+    );
+    assert!(
+        !output.contains("inner::Png::new"),
+        "must not requalify an already-short, in-scope call, got:\n{output}"
+    );
+    assert!(output.contains("Png::new()"), "should leave the call unchanged, got:\n{output}");
+}
