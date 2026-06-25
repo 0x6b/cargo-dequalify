@@ -20,8 +20,7 @@ proc-macro2 = { version = "1.0", features = ["span-locations"], default-features
 quote = "1.0"
 gix = { version = "0.84", default-features = false, features = ["status", "sha1"] }
 glob = "0.3"
-
-[dev-dependencies]
+globset = "0.4"
 tempfile = "3.27"
 
 [profile.release]

@@ -72,7 +72,7 @@ pub fn run(cli: &Cli) -> Result<()> {
         && cli.write
         && let Some(tc) = &cli.fmt
     {
-        run_cargo_fmt(&outcome.workspace_root, tc.as_deref())?;
+        run_cargo_fmt(&outcome.workspace_root, tc.as_deref(), &outcome.generated_rust_files)?;
     }
     Ok(())
 }
