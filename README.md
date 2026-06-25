@@ -50,6 +50,8 @@ Options:
   -V, --version                      Print version
 ```
 
+Rust files marked with `linguist-generated` or `linguist-generated=true` in the workspace root `.gitattributes` are skipped. When `--fmt` is used, those files are also added to rustfmt's temporary `ignore` list. That formatting ignore support is a nightly rustfmt feature, so use `--fmt=nightly` if generated files should also be protected during formatting.
+
 ## Conflict Handling
 
 When the short name would conflict with an existing import or local definition, the tool imports the parent module instead:

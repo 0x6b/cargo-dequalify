@@ -13,6 +13,7 @@ use crate::rewrite::{Change, Options, process_file};
 
 pub struct ProcessOutcome {
     pub workspace_root: PathBuf,
+    pub generated_rust_files: Vec<PathBuf>,
     pub results: Vec<(PathBuf, Result<Change>)>,
 }
 
@@ -25,10 +26,15 @@ pub fn process_path(path: &Path, options: &Options) -> Result<ProcessOutcome> {
     let manifest = load_workspace(&cargo_toml)?;
     let workspace_root = cargo_toml.parent().unwrap_or(Path::new(".")).to_path_buf();
     let crate_roots = workspace_crate_roots(&cargo_toml, &manifest);
-    let rs_files = rs_files_under(&crate_roots);
+    let rs_files = rs_files_under(&crate_roots, &workspace_root);
     let results = rs_files
+        .files
         .par_iter()
         .map(|p| (p.clone(), process_file(p, options)))
         .collect();
-    Ok(ProcessOutcome { workspace_root, results })
+    Ok(ProcessOutcome {
+        workspace_root,
+        generated_rust_files: rs_files.generated,
+        results,
+    })
 }
