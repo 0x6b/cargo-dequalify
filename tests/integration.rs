@@ -1422,6 +1422,57 @@ mod tests {
 }
 
 #[test]
+fn test_opaque_macro_protects_binding_not_name_globally() {
+    let input = r#"
+mod opaque {
+    use one::header;
+
+    fn check() {
+        assert!(header::ENABLED);
+    }
+}
+
+mod editable {
+    use two::header;
+
+    fn value() {
+        let _ = header::VALUE;
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("assert!(header::ENABLED)"), "got:\n{output}");
+    assert!(output.contains("use two::header::VALUE;"), "got:\n{output}");
+    assert!(output.contains("let _ = VALUE;"), "got:\n{output}");
+}
+
+#[test]
+fn test_module_aliases_do_not_leak_into_siblings() {
+    let input = r#"
+mod first {
+    use one::service;
+
+    fn call() {
+        service::start();
+    }
+}
+
+mod second {
+    use two::service;
+
+    fn call() {
+        service::stop();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use one::service::start;"), "got:\n{output}");
+    assert!(output.contains("use two::service::stop;"), "got:\n{output}");
+    assert!(!output.contains("use one::service::stop;"), "got:\n{output}");
+    assert!(!output.contains("use two::service::start;"), "got:\n{output}");
+}
+
+#[test]
 fn test_self_import_expansion() {
     // When `io` is imported via `{self}`, paths like `io::stdin()` should be expanded
     // to `std::io::stdin` and dequalified to `stdin()`.

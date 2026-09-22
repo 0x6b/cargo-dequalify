@@ -28,6 +28,7 @@ pub(super) struct Occurrence {
     pub(super) scope: String,
     pub(super) cfg: Vec<String>,
     pub(super) suffix: String,
+    pub(super) binding: Option<usize>,
     /// Locals visible at the call site (union over the enclosing
     /// function/closure frames). A short-name import for this occurrence must
     /// not collide with any of these names.
@@ -41,9 +42,9 @@ pub(super) struct ScopeInfo {
     pub(super) has_glob: bool,
     pub(super) mappings: BTreeMap<String, String>,
     pub(super) defs: BTreeSet<String>,
-    /// True if this scope contains `use super::*;`, which re-exports the
-    /// parent scope's imports under their short names.
-    pub(super) super_glob: bool,
+    /// Names mentioned inside macro bodies whose grammar we do not understand.
+    /// New imports must not capture these names.
+    pub(super) opaque_names: BTreeSet<String>,
 }
 
 pub(super) struct Collector<'a> {
@@ -52,13 +53,12 @@ pub(super) struct Collector<'a> {
     scope: Vec<String>,
     pub(super) scopes: BTreeMap<String, ScopeInfo>,
     lines: &'a Lines<'a>,
-    pub(super) mappings: BTreeMap<String, String>,
+    mappings: BTreeMap<String, String>,
+    binding_ids: BTreeMap<String, usize>,
+    next_binding_id: usize,
+    pub(super) protected_bindings: BTreeSet<usize>,
     internal: BTreeSet<String>,
     cfg: BTreeSet<String>,
-    /// Leading names of qualified paths found inside macros whose arguments
-    /// we cannot parse. Rewriting other uses of one of these names could make
-    /// its module import look unused even though the opaque macro still needs it.
-    opaque_macro_roots: BTreeSet<String>,
     /// Stack of locals introduced by the enclosing function/closure frames.
     fn_locals: Vec<BTreeSet<String>>,
 }
@@ -72,11 +72,7 @@ fn path_byte_span(path: &SynPath, lines: &Lines<'_>) -> Option<(usize, usize)> {
 }
 
 impl<'a> Collector<'a> {
-    pub(super) fn new(
-        ignore: &'a BTreeSet<String>,
-        lines: &'a Lines<'a>,
-        opaque_macro_roots: BTreeSet<String>,
-    ) -> Self {
+    pub(super) fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines<'a>) -> Self {
         Self {
             occs: Vec::new(),
             ignore,
@@ -84,10 +80,50 @@ impl<'a> Collector<'a> {
             scopes: BTreeMap::new(),
             lines,
             mappings: BTreeMap::new(),
+            binding_ids: BTreeMap::new(),
+            next_binding_id: 0,
+            protected_bindings: BTreeSet::new(),
             internal: BTreeSet::new(),
             cfg: BTreeSet::new(),
-            opaque_macro_roots,
             fn_locals: Vec::new(),
+        }
+    }
+
+    fn alloc_binding(&mut self) -> usize {
+        let id = self.next_binding_id;
+        self.next_binding_id += 1;
+        id
+    }
+
+    fn install_scope_mappings(
+        &mut self,
+        raw: BTreeMap<String, String>,
+        inherited: BTreeMap<String, (String, usize)>,
+    ) {
+        let mut combined: BTreeMap<String, String> = inherited
+            .iter()
+            .map(|(name, (target, _))| (name.clone(), target.clone()))
+            .collect();
+        combined.extend(raw.clone());
+        let snapshot = combined.clone();
+        let mut cache = BTreeMap::new();
+        let resolved: BTreeMap<_, _> = raw
+            .into_iter()
+            .map(|(name, target)| {
+                let target = resolve_path(&target, &snapshot, &mut cache, 0);
+                (name, target)
+            })
+            .collect();
+
+        self.mappings = inherited
+            .iter()
+            .map(|(name, (target, _))| (name.clone(), target.clone()))
+            .collect();
+        self.binding_ids = inherited.into_iter().map(|(name, (_, id))| (name, id)).collect();
+        for (name, target) in resolved {
+            let id = self.alloc_binding();
+            self.mappings.insert(name.clone(), target);
+            self.binding_ids.insert(name, id);
         }
     }
 
@@ -134,11 +170,13 @@ impl<'a> Collector<'a> {
     /// `fn_locals.len()`.
     fn with_frame<F: FnOnce(&mut Self)>(&mut self, locals: BTreeSet<String>, f: F) {
         let saved_mappings = self.mappings.clone();
+        let saved_binding_ids = self.binding_ids.clone();
         let saved_internal = self.internal.clone();
         self.fn_locals.push(locals);
         f(self);
         self.fn_locals.pop();
         self.mappings = saved_mappings;
+        self.binding_ids = saved_binding_ids;
         self.internal = saved_internal;
     }
 
@@ -190,9 +228,10 @@ impl<'a> Collector<'a> {
             return;
         }
         let first = segs[0].ident.to_string();
-        if self.internal.contains(&first) || self.opaque_macro_roots.contains(&first) {
+        if self.internal.contains(&first) {
             return;
         }
+        let binding = self.binding_ids.get(&first).copied();
 
         let rest: Vec<String> = segs.iter().skip(1).map(|s| s.ident.to_string()).collect();
         let (full, eff) = match self.expand(&first, &rest) {
@@ -224,6 +263,7 @@ impl<'a> Collector<'a> {
                     scope: self.cur_scope(),
                     cfg: self.cur_cfg(),
                     suffix,
+                    binding,
                     locals: self.cur_locals(),
                 });
                 return;
@@ -238,23 +278,38 @@ impl<'a> Collector<'a> {
             scope: self.cur_scope(),
             cfg: self.cur_cfg(),
             suffix: String::new(),
+            binding,
             locals: self.cur_locals(),
         });
     }
 
-    fn visit_fmt_args(&mut self, m: &Macro) {
-        use syn::{Token, parse::Parser, punctuated::Punctuated};
+    fn visit_fmt_args(&mut self, m: &Macro) -> bool {
         if let Ok(args) = Punctuated::<Expr, Token![,]>::parse_terminated.parse2(m.tokens.clone()) {
             args.into_iter().skip(1).for_each(|a| self.visit_expr(&a));
+            true
+        } else {
+            false
         }
     }
 }
 
 impl Visit<'_> for Collector<'_> {
     fn visit_item_use(&mut self, n: &ItemUse) {
-        collect_mappings(&n.tree, &mut self.mappings);
-        if !self.fn_locals.is_empty() && is_internal(&n.tree) {
-            collect_idents(&n.tree, &mut self.internal);
+        if !self.fn_locals.is_empty() {
+            let mut raw = BTreeMap::new();
+            collect_mappings(&n.tree, &mut raw);
+            let mut combined = self.mappings.clone();
+            combined.extend(raw.clone());
+            let mut cache = BTreeMap::new();
+            for (name, target) in raw {
+                let target = resolve_path(&target, &combined, &mut cache, 0);
+                let id = self.alloc_binding();
+                self.mappings.insert(name.clone(), target);
+                self.binding_ids.insert(name, id);
+            }
+            if is_internal(&n.tree) {
+                collect_idents(&n.tree, &mut self.internal);
+            }
         }
         visit::visit_item_use(self, n);
     }
@@ -318,9 +373,25 @@ impl Visit<'_> for Collector<'_> {
             visit::visit_item_mod(self, n);
             return;
         };
+        let saved_mappings = self.mappings.clone();
+        let saved_binding_ids = self.binding_ids.clone();
+        let saved_cfg = std::mem::take(&mut self.cfg);
         self.scope.push(n.ident.to_string());
         let scope = self.cur_scope();
         let acc = accumulate_uses(items);
+        let inherited = if acc.super_glob {
+            saved_mappings
+                .iter()
+                .filter_map(|(name, target)| {
+                    saved_binding_ids
+                        .get(name)
+                        .map(|id| (name.clone(), (target.clone(), *id)))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        self.install_scope_mappings(acc.mappings.clone(), inherited);
         let defs = collect_defs(items);
         let indent = items.first().map_or_else(
             || " ".repeat(DEFAULT_INDENT_WIDTH * self.scope.len()),
@@ -336,13 +407,16 @@ impl Visit<'_> for Collector<'_> {
                 imports: acc.imports,
                 indent,
                 has_glob: acc.has_glob,
-                mappings: acc.mappings,
+                mappings: self.mappings.clone(),
                 defs,
-                super_glob: acc.super_glob,
+                opaque_names: BTreeSet::new(),
             },
         );
         visit::visit_item_mod(self, n);
         self.scope.pop();
+        self.mappings = saved_mappings;
+        self.binding_ids = saved_binding_ids;
+        self.cfg = saved_cfg;
     }
 
     fn visit_macro(&mut self, n: &Macro) {
@@ -352,8 +426,18 @@ impl Visit<'_> for Collector<'_> {
                 .segments
                 .first()
                 .is_some_and(|s| FMT_MACROS.contains(&s.ident.to_string().as_str()));
-        if is_fmt {
-            self.visit_fmt_args(n);
+        let parsed = is_fmt && self.visit_fmt_args(n);
+        if !parsed {
+            let names = collect_token_names(n.tokens.clone());
+            if let Some(info) = self.scopes.get_mut(&self.cur_scope()) {
+                info.opaque_names.extend(names.iter().cloned());
+            }
+            names
+                .iter()
+                .filter_map(|name| self.binding_ids.get(name))
+                .for_each(|id| {
+                    self.protected_bindings.insert(*id);
+                });
         }
         visit::visit_macro(self, n);
     }
@@ -408,88 +492,30 @@ pub(super) fn collect_occurrences<'a>(
     lines: &'a Lines<'a>,
     ignore: &'a BTreeSet<String>,
 ) -> Collector<'a> {
-    let mut c = Collector::new(ignore, lines, collect_opaque_macro_roots(ast));
-    c.scopes.insert(String::new(), file_scope(ast, lines));
+    let mut c = Collector::new(ignore, lines);
+    let mut root = file_scope(ast, lines);
+    c.install_scope_mappings(root.mappings.clone(), BTreeMap::new());
+    root.mappings = c.mappings.clone();
+    c.scopes.insert(String::new(), root);
     Visit::visit_file(&mut c, ast);
-
-    let mut cache = BTreeMap::new();
-    resolve_mappings(&mut c.mappings, &mut cache);
-    c.occs
-        .iter_mut()
-        .for_each(|o| o.path = resolve_path(&o.path, &c.mappings, &mut cache, 0));
-    // Resolve each scope's mappings shallow-to-deep. A scope with `use super::*`
-    // re-exports its parent's imports under their short names, so it inherits
-    // the parent's (already-resolved) mappings. Without this, a call to an
-    // already-imported short name in such a scope looks like a fresh import that
-    // collides with the glob name, and `resolve` mis-escalates to a parent-module
-    // import whose relative path is anchored to the wrong scope.
-    let mut keys: Vec<String> = c.scopes.keys().cloned().collect();
-    keys.sort_by_key(|k| if k.is_empty() { 0 } else { k.matches("::").count() + 1 });
-    for key in keys {
-        if c.scopes.get(&key).is_some_and(|i| i.super_glob) {
-            let parent = key.rsplit_once("::").map_or("", |(p, _)| p);
-            if let Some(parent_mappings) = c.scopes.get(parent).map(|i| i.mappings.clone()) {
-                let info = c.scopes.get_mut(&key).expect("key came from c.scopes");
-                parent_mappings.into_iter().for_each(|(k, v)| {
-                    info.mappings.entry(k).or_insert(v);
-                });
-            }
-        }
-        if let Some(info) = c.scopes.get_mut(&key) {
-            resolve_mappings(&mut info.mappings, &mut cache);
-        }
-    }
     c
 }
 
-fn collect_opaque_macro_roots(ast: &File) -> BTreeSet<String> {
-    struct OpaqueMacroVisitor(BTreeSet<String>);
-
-    impl Visit<'_> for OpaqueMacroVisitor {
-        fn visit_macro(&mut self, n: &Macro) {
-            let is_fmt = n.path.segments.len() == 1
-                && n.path
-                    .segments
-                    .first()
-                    .is_some_and(|s| FMT_MACROS.contains(&s.ident.to_string().as_str()));
-            let parsed = is_fmt
-                .then(|| Punctuated::<Expr, Token![,]>::parse_terminated.parse2(n.tokens.clone()))
-                .and_then(Result::ok);
-            if let Some(args) = parsed {
-                args.into_iter().skip(1).for_each(|arg| self.visit_expr(&arg));
-            } else {
-                collect_token_roots(n.tokens.clone(), &mut self.0);
-            }
-        }
-    }
-
-    let mut visitor = OpaqueMacroVisitor(BTreeSet::new());
-    visitor.visit_file(ast);
-    visitor.0
-}
-
-fn collect_token_roots(tokens: proc_macro2::TokenStream, roots: &mut BTreeSet<String>) {
+fn collect_token_names(tokens: proc_macro2::TokenStream) -> BTreeSet<String> {
     use proc_macro2::TokenTree;
 
-    let tokens: Vec<_> = tokens.into_iter().collect();
-    for window in tokens.windows(4) {
-        if let [
-            TokenTree::Ident(root),
-            TokenTree::Punct(a),
-            TokenTree::Punct(b),
-            TokenTree::Ident(_),
-        ] = window
-            && a.as_char() == ':'
-            && b.as_char() == ':'
-        {
-            roots.insert(root.to_string());
+    tokens.into_iter().fold(BTreeSet::new(), |mut names, token| {
+        match token {
+            TokenTree::Ident(ident) => {
+                names.insert(ident.to_string());
+            }
+            TokenTree::Group(group) => {
+                names.extend(collect_token_names(group.stream()));
+            }
+            _ => {}
         }
-    }
-    tokens.into_iter().for_each(|token| {
-        if let TokenTree::Group(group) = token {
-            collect_token_roots(group.stream(), roots);
-        }
-    });
+        names
+    })
 }
 
 fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
@@ -511,9 +537,7 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
         has_glob: acc.has_glob,
         mappings: acc.mappings,
         defs: collect_defs(&ast.items),
-        // The file scope's parent is outside this file, so its mappings are
-        // unknown; never inherit across the file boundary.
-        super_glob: false,
+        opaque_names: BTreeSet::new(),
     }
 }
 
@@ -547,11 +571,4 @@ fn accumulate_uses(items: &[Item]) -> UseAccumulator {
             collect_mappings(&u.tree, &mut acc.mappings);
         });
     acc
-}
-
-/// Rewrite each value of `map` so its first segment is no longer an alias
-/// of another mapping (i.e. fold chains like `A -> B -> C` into `A -> C`).
-fn resolve_mappings(map: &mut BTreeMap<String, String>, cache: &mut BTreeMap<String, String>) {
-    let snap = map.clone();
-    map.values_mut().for_each(|v| *v = resolve_path(v, &snap, cache, 0));
 }

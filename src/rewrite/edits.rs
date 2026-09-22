@@ -37,6 +37,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
         let mut existing = info.imports.clone();
         existing.extend(prelude.iter().cloned());
         existing.extend(info.defs.iter().cloned());
+        existing.extend(info.opaque_names.iter().cloned());
         // Pessimistically include every local visible at any occurrence in this
         // scope: a single import line serves all occurrences, so the chosen
         // short name must avoid collision in any of them.
@@ -55,6 +56,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
 
         let mut by_cfg: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
         occs.iter()
+            .filter(|o| o.binding.is_none_or(|id| !c.protected_bindings.contains(&id)))
             .filter_map(|o| strats.get(&o.path).map(|s| (o, s)))
             .for_each(|(o, s)| {
                 let text = if o.suffix.is_empty() {
