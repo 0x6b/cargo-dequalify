@@ -1324,7 +1324,7 @@ mod platform {
 
 #[test]
 fn test_same_import_different_cfg() {
-    // Same import used in different cfg contexts should generate separate imports
+    // One import requirement is the union of all conditions that need it.
     let input = r#"
 #[cfg(unix)]
 fn unix_spawn() {
@@ -1337,16 +1337,61 @@ fn windows_spawn() {
 }
 "#;
     let output = process_source(input, &[]);
-    // Should have cfg(unix) import
     assert!(
-        output.contains("#[cfg(unix)]\nuse tokio::task::spawn;"),
-        "Should have unix cfg-gated import, got:\n{output}"
+        output.contains("#[cfg(any(unix, windows))]\nuse tokio::task::spawn;"),
+        "Should have one import under the union of both conditions, got:\n{output}"
     );
-    // Should have cfg(windows) import
-    assert!(
-        output.contains("#[cfg(windows)]\nuse tokio::task::spawn;"),
-        "Should have windows cfg-gated import, got:\n{output}"
-    );
+    assert_eq!(output.matches("use tokio::task::spawn;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_weaker_cfg_requirement_subsumes_stronger_one() {
+    let input = r#"
+#[cfg(feature = "a")]
+fn under_a() {
+    tokio::task::spawn(async {});
+}
+
+#[cfg(feature = "a")]
+fn also_under_a() {
+    #[cfg(feature = "b")]
+    let _task = tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(feature = \"a\")]\nuse tokio::task::spawn;"), "got:\n{output}");
+    assert!(!output.contains("all(feature = \"a\", feature = \"b\")"), "got:\n{output}");
+    assert_eq!(output.matches("use tokio::task::spawn;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_conditional_import_is_not_reused_unconditionally() {
+    let input = r#"
+#[cfg(test)]
+use dependency::run;
+
+fn always() {
+    dependency::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("dependency::run()"), "got:\n{output}");
+    assert!(!output.contains("fn always() {\n    run();"), "got:\n{output}");
+}
+
+#[test]
+fn test_paths_through_conditional_alias_are_left_unchanged() {
+    let input = r#"
+#[cfg(test)]
+use dependency::service;
+
+#[cfg(test)]
+fn test_only() {
+    service::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
 }
 
 #[test]
@@ -1443,6 +1488,23 @@ mod editable {
     let output = process_source(input, &[]);
     assert!(output.contains("assert!(header::ENABLED)"), "got:\n{output}");
     assert!(output.contains("use two::header::VALUE;"), "got:\n{output}");
+    assert!(output.contains("let _ = VALUE;"), "got:\n{output}");
+}
+
+#[test]
+fn test_opaque_macro_protects_alias_identity_not_target() {
+    let input = r#"
+use dependency::service as opaque;
+use dependency::service as editable;
+
+fn check() {
+    assert!(opaque::ENABLED);
+    let _ = editable::VALUE;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("assert!(opaque::ENABLED)"), "got:\n{output}");
+    assert!(output.contains("use dependency::service::VALUE;"), "got:\n{output}");
     assert!(output.contains("let _ = VALUE;"), "got:\n{output}");
 }
 

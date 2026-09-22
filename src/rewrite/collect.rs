@@ -47,14 +47,20 @@ pub(super) struct ScopeInfo {
     pub(super) opaque_names: BTreeSet<String>,
 }
 
+#[derive(Clone)]
+struct Binding {
+    id: usize,
+    target: String,
+}
+
 pub(super) struct Collector<'a> {
     pub(super) occs: Vec<Occurrence>,
     ignore: &'a BTreeSet<String>,
     scope: Vec<String>,
     pub(super) scopes: BTreeMap<String, ScopeInfo>,
     lines: &'a Lines<'a>,
-    mappings: BTreeMap<String, String>,
-    binding_ids: BTreeMap<String, usize>,
+    bindings: BTreeMap<String, Binding>,
+    conditional_names: BTreeSet<String>,
     next_binding_id: usize,
     pub(super) protected_bindings: BTreeSet<usize>,
     internal: BTreeSet<String>,
@@ -79,8 +85,8 @@ impl<'a> Collector<'a> {
             scope: Vec::new(),
             scopes: BTreeMap::new(),
             lines,
-            mappings: BTreeMap::new(),
-            binding_ids: BTreeMap::new(),
+            bindings: BTreeMap::new(),
+            conditional_names: BTreeSet::new(),
             next_binding_id: 0,
             protected_bindings: BTreeSet::new(),
             internal: BTreeSet::new(),
@@ -98,11 +104,11 @@ impl<'a> Collector<'a> {
     fn install_scope_mappings(
         &mut self,
         raw: BTreeMap<String, String>,
-        inherited: BTreeMap<String, (String, usize)>,
+        inherited: BTreeMap<String, Binding>,
     ) {
         let mut combined: BTreeMap<String, String> = inherited
             .iter()
-            .map(|(name, (target, _))| (name.clone(), target.clone()))
+            .map(|(name, binding)| (name.clone(), binding.target.clone()))
             .collect();
         combined.extend(raw.clone());
         let snapshot = combined.clone();
@@ -115,16 +121,18 @@ impl<'a> Collector<'a> {
             })
             .collect();
 
-        self.mappings = inherited
-            .iter()
-            .map(|(name, (target, _))| (name.clone(), target.clone()))
-            .collect();
-        self.binding_ids = inherited.into_iter().map(|(name, (_, id))| (name, id)).collect();
+        self.bindings = inherited;
         for (name, target) in resolved {
             let id = self.alloc_binding();
-            self.mappings.insert(name.clone(), target);
-            self.binding_ids.insert(name, id);
+            self.bindings.insert(name, Binding { id, target });
         }
+    }
+
+    fn target_mappings(&self) -> BTreeMap<String, String> {
+        self.bindings
+            .iter()
+            .map(|(name, binding)| (name.clone(), binding.target.clone()))
+            .collect()
     }
 
     fn cur_cfg(&self) -> Vec<String> {
@@ -146,7 +154,8 @@ impl<'a> Collector<'a> {
     }
 
     fn expand(&self, first: &str, rest: &[String]) -> Option<String> {
-        self.mappings.get(first).and_then(|base| {
+        self.bindings.get(first).and_then(|binding| {
+            let base = &binding.target;
             (base.split("::").next()? != first || rest.is_empty()).then(|| {
                 if rest.is_empty() { base.clone() } else { format!("{base}::{}", rest.join("::")) }
             })
@@ -169,14 +178,14 @@ impl<'a> Collector<'a> {
     /// top entry on the locals stack. Frame depth is implied by
     /// `fn_locals.len()`.
     fn with_frame<F: FnOnce(&mut Self)>(&mut self, locals: BTreeSet<String>, f: F) {
-        let saved_mappings = self.mappings.clone();
-        let saved_binding_ids = self.binding_ids.clone();
+        let saved_bindings = self.bindings.clone();
+        let saved_conditional_names = self.conditional_names.clone();
         let saved_internal = self.internal.clone();
         self.fn_locals.push(locals);
         f(self);
         self.fn_locals.pop();
-        self.mappings = saved_mappings;
-        self.binding_ids = saved_binding_ids;
+        self.bindings = saved_bindings;
+        self.conditional_names = saved_conditional_names;
         self.internal = saved_internal;
     }
 
@@ -228,10 +237,10 @@ impl<'a> Collector<'a> {
             return;
         }
         let first = segs[0].ident.to_string();
-        if self.internal.contains(&first) {
+        if self.internal.contains(&first) || self.conditional_names.contains(&first) {
             return;
         }
-        let binding = self.binding_ids.get(&first).copied();
+        let binding = self.bindings.get(&first).map(|binding| binding.id);
 
         let rest: Vec<String> = segs.iter().skip(1).map(|s| s.ident.to_string()).collect();
         let (full, eff) = match self.expand(&first, &rest) {
@@ -296,16 +305,20 @@ impl<'a> Collector<'a> {
 impl Visit<'_> for Collector<'_> {
     fn visit_item_use(&mut self, n: &ItemUse) {
         if !self.fn_locals.is_empty() {
+            if !extract_cfg(&n.attrs).is_empty() {
+                collect_idents(&n.tree, &mut self.conditional_names);
+                visit::visit_item_use(self, n);
+                return;
+            }
             let mut raw = BTreeMap::new();
             collect_mappings(&n.tree, &mut raw);
-            let mut combined = self.mappings.clone();
+            let mut combined = self.target_mappings();
             combined.extend(raw.clone());
             let mut cache = BTreeMap::new();
             for (name, target) in raw {
                 let target = resolve_path(&target, &combined, &mut cache, 0);
                 let id = self.alloc_binding();
-                self.mappings.insert(name.clone(), target);
-                self.binding_ids.insert(name, id);
+                self.bindings.insert(name, Binding { id, target });
             }
             if is_internal(&n.tree) {
                 collect_idents(&n.tree, &mut self.internal);
@@ -373,25 +386,18 @@ impl Visit<'_> for Collector<'_> {
             visit::visit_item_mod(self, n);
             return;
         };
-        let saved_mappings = self.mappings.clone();
-        let saved_binding_ids = self.binding_ids.clone();
+        let saved_bindings = self.bindings.clone();
+        let saved_conditional_names = self.conditional_names.clone();
         let saved_cfg = std::mem::take(&mut self.cfg);
         self.scope.push(n.ident.to_string());
         let scope = self.cur_scope();
         let acc = accumulate_uses(items);
-        let inherited = if acc.super_glob {
-            saved_mappings
-                .iter()
-                .filter_map(|(name, target)| {
-                    saved_binding_ids
-                        .get(name)
-                        .map(|id| (name.clone(), (target.clone(), *id)))
-                })
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
+        let inherited = if acc.super_glob { saved_bindings.clone() } else { BTreeMap::new() };
         self.install_scope_mappings(acc.mappings.clone(), inherited);
+        self.conditional_names = acc.conditional_names.clone();
+        if acc.super_glob {
+            self.conditional_names.extend(saved_conditional_names.iter().cloned());
+        }
         let defs = collect_defs(items);
         let indent = items.first().map_or_else(
             || " ".repeat(DEFAULT_INDENT_WIDTH * self.scope.len()),
@@ -407,15 +413,15 @@ impl Visit<'_> for Collector<'_> {
                 imports: acc.imports,
                 indent,
                 has_glob: acc.has_glob,
-                mappings: self.mappings.clone(),
+                mappings: self.target_mappings(),
                 defs,
                 opaque_names: BTreeSet::new(),
             },
         );
         visit::visit_item_mod(self, n);
         self.scope.pop();
-        self.mappings = saved_mappings;
-        self.binding_ids = saved_binding_ids;
+        self.bindings = saved_bindings;
+        self.conditional_names = saved_conditional_names;
         self.cfg = saved_cfg;
     }
 
@@ -434,9 +440,9 @@ impl Visit<'_> for Collector<'_> {
             }
             names
                 .iter()
-                .filter_map(|name| self.binding_ids.get(name))
-                .for_each(|id| {
-                    self.protected_bindings.insert(*id);
+                .filter_map(|name| self.bindings.get(name))
+                .for_each(|binding| {
+                    self.protected_bindings.insert(binding.id);
                 });
         }
         visit::visit_macro(self, n);
@@ -493,9 +499,10 @@ pub(super) fn collect_occurrences<'a>(
     ignore: &'a BTreeSet<String>,
 ) -> Collector<'a> {
     let mut c = Collector::new(ignore, lines);
-    let mut root = file_scope(ast, lines);
+    let (mut root, conditional_names) = file_scope(ast, lines);
     c.install_scope_mappings(root.mappings.clone(), BTreeMap::new());
-    root.mappings = c.mappings.clone();
+    c.conditional_names = conditional_names;
+    root.mappings = c.target_mappings();
     c.scopes.insert(String::new(), root);
     Visit::visit_file(&mut c, ast);
     c
@@ -518,7 +525,7 @@ fn collect_token_names(tokens: proc_macro2::TokenStream) -> BTreeSet<String> {
     })
 }
 
-fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
+fn file_scope(ast: &File, lines: &Lines<'_>) -> (ScopeInfo, BTreeSet<String>) {
     let acc = accumulate_uses(&ast.items);
     // Default below any inner attributes (`#![…]`) and module doc comments
     // (`//! …`, lowered to `#![doc = "…"]`) so a fresh import is never
@@ -530,15 +537,18 @@ fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {
         .max()
         .unwrap_or(0);
     let pos = acc.last_use_line.map_or(attr_end, |l| lines.end(l));
-    ScopeInfo {
-        pos,
-        imports: acc.imports,
-        indent: String::new(),
-        has_glob: acc.has_glob,
-        mappings: acc.mappings,
-        defs: collect_defs(&ast.items),
-        opaque_names: BTreeSet::new(),
-    }
+    (
+        ScopeInfo {
+            pos,
+            imports: acc.imports,
+            indent: String::new(),
+            has_glob: acc.has_glob,
+            mappings: acc.mappings,
+            defs: collect_defs(&ast.items),
+            opaque_names: BTreeSet::new(),
+        },
+        acc.conditional_names,
+    )
 }
 
 struct UseAccumulator {
@@ -546,6 +556,7 @@ struct UseAccumulator {
     has_glob: bool,
     super_glob: bool,
     mappings: BTreeMap<String, String>,
+    conditional_names: BTreeSet<String>,
     last_use_line: Option<usize>,
 }
 
@@ -555,6 +566,7 @@ fn accumulate_uses(items: &[Item]) -> UseAccumulator {
         has_glob: false,
         super_glob: false,
         mappings: BTreeMap::new(),
+        conditional_names: BTreeSet::new(),
         last_use_line: None,
     };
     items
@@ -568,7 +580,11 @@ fn accumulate_uses(items: &[Item]) -> UseAccumulator {
             collect_idents(&u.tree, &mut acc.imports);
             acc.has_glob |= has_glob_import(&u.tree);
             acc.super_glob |= has_super_glob(&u.tree);
-            collect_mappings(&u.tree, &mut acc.mappings);
+            if extract_cfg(&u.attrs).is_empty() {
+                collect_mappings(&u.tree, &mut acc.mappings);
+            } else {
+                collect_idents(&u.tree, &mut acc.conditional_names);
+            }
         });
     acc
 }

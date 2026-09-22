@@ -11,6 +11,7 @@ use syn::File;
 
 use super::{
     Change,
+    attrs::render_cfg_union,
     collect::{Collector, Occurrence},
     defs::{collect_prelude, collect_unqualified_names},
     diff::diff,
@@ -34,6 +35,11 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     let mut edits = Vec::new();
     by_scope.iter().for_each(|(scope, occs)| {
         let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
+        let eligible: Vec<_> = occs
+            .iter()
+            .copied()
+            .filter(|o| o.binding.is_none_or(|id| !c.protected_bindings.contains(&id)))
+            .collect();
         let mut existing = info.imports.clone();
         existing.extend(prelude.iter().cloned());
         existing.extend(info.defs.iter().cloned());
@@ -46,7 +52,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
             existing.extend(unqualified.iter().cloned());
         }
 
-        let scope_paths: Vec<_> = occs
+        let scope_paths: Vec<_> = eligible
             .iter()
             .map(|o| o.path.clone())
             .collect::<BTreeSet<_>>()
@@ -54,9 +60,9 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
             .collect();
         let strats = resolve(&scope_paths, &existing, &info.mappings);
 
-        let mut by_cfg: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
-        occs.iter()
-            .filter(|o| o.binding.is_none_or(|id| !c.protected_bindings.contains(&id)))
+        let mut requirements: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
+        eligible
+            .iter()
             .filter_map(|o| strats.get(&o.path).map(|s| (o, s)))
             .for_each(|(o, s)| {
                 let text = if o.suffix.is_empty() {
@@ -72,29 +78,19 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
                     return;
                 }
                 if let Some(u) = s.use_stmt() {
-                    by_cfg.entry(o.cfg.clone()).or_default().insert(u);
+                    requirements.entry(u).or_default().insert(o.cfg.clone());
                 }
                 edits.push(Edit { range: o.span.0..o.span.1, text });
             });
 
-        // An unconditional import is available in every cfg context. Emitting
-        // gated copies of it would define the same name twice whenever those
-        // predicates are true.
-        if let Some(unconditional) = by_cfg.get(&Vec::new()).cloned() {
-            by_cfg
-                .iter_mut()
-                .filter(|(cfg, _)| !cfg.is_empty())
-                .for_each(|(_, stmts)| {
-                    stmts.retain(|stmt| !unconditional.contains(stmt));
-                });
-        }
-
         let ind = &info.indent;
-        let blocks: Vec<String> = by_cfg
-            .iter()
-            .flat_map(|(cfg, stmts)| {
-                let pre: String = cfg.iter().map(|c| format!("{ind}#[{c}]\n")).collect();
-                stmts.iter().map(move |s| format!("{pre}{ind}{s}"))
+        let blocks: Vec<String> = requirements
+            .into_iter()
+            .map(|(stmt, conditions)| {
+                let attr = render_cfg_union(conditions)
+                    .map(|condition| format!("{ind}#[cfg({condition})]\n"))
+                    .unwrap_or_default();
+                format!("{attr}{ind}{stmt}")
             })
             .collect();
         if !blocks.is_empty() {
