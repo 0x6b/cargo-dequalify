@@ -8,7 +8,7 @@ pub(super) fn extract_cfg(attrs: &[Attribute]) -> Vec<String> {
         .iter()
         .filter_map(|a| {
             if a.path().is_ident("cfg") {
-                a.meta.require_list().ok().map(|l| format!("cfg({})", l.tokens))
+                a.meta.require_list().ok().map(|l| l.tokens.to_string())
             } else if a.path().is_ident("cfg_attr") {
                 cfg_attr_predicate(a)
             } else {
@@ -41,7 +41,50 @@ fn cfg_attr_predicate(attr: &Attribute) -> Option<String> {
         1 => inner_cfgs.into_iter().next().unwrap(),
         _ => format!("all({})", inner_cfgs.join(", ")),
     };
-    Some(format!("cfg(any(not({pred_str}), {inner}))"))
+    Some(format!("any(not({pred_str}), {inner})"))
+}
+
+/// Render the union of conjunctions under which one generated import is
+/// required. An empty conjunction means the import is unconditional.
+pub(super) fn render_cfg_union<I>(requirements: I) -> Option<String>
+where
+    I: IntoIterator<Item = Vec<String>>,
+{
+    let mut clauses: Vec<Vec<String>> = requirements
+        .into_iter()
+        .map(|mut clause| {
+            clause.sort();
+            clause.dedup();
+            clause
+        })
+        .collect();
+    clauses.sort();
+    clauses.dedup();
+    if clauses.iter().any(Vec::is_empty) {
+        return None;
+    }
+
+    // A weaker conjunction covers a stronger one: `a` already includes
+    // `all(a, b)`, so the latter contributes nothing to the union.
+    let snapshot = clauses.clone();
+    clauses.retain(|clause| {
+        !snapshot.iter().any(|other| {
+            other.len() < clause.len() && other.iter().all(|predicate| clause.contains(predicate))
+        })
+    });
+
+    let mut rendered = clauses.into_iter().map(render_conjunction);
+    let first = rendered.next()?;
+    let rest: Vec<_> = rendered.collect();
+    if rest.is_empty() { Some(first) } else { Some(format!("any({first}, {})", rest.join(", "))) }
+}
+
+fn render_conjunction(clause: Vec<String>) -> String {
+    if clause.len() == 1 {
+        clause.into_iter().next().unwrap()
+    } else {
+        format!("all({})", clause.join(", "))
+    }
 }
 
 fn meta_to_string(m: &Meta) -> String {

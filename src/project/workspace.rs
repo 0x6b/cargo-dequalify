@@ -19,8 +19,6 @@ struct CargoToml {
 #[derive(Deserialize)]
 struct Workspace {
     members: Option<Vec<String>>,
-    #[serde(rename = "default-members")]
-    default_members: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
 }
 
@@ -44,13 +42,7 @@ pub(super) struct WorkspaceManifest {
 pub(super) fn load_workspace(path: &Path) -> Result<WorkspaceManifest> {
     let parsed: CargoToml = from_str(&read_to_string(path)?)?;
     let ws = parsed.workspace;
-    // Prefer `default-members` when present; cargo uses it as the active set
-    // for commands without `--workspace`, and refactoring should match that
-    // default scope rather than always touching every member.
-    let mut members = ws
-        .as_ref()
-        .and_then(|w| w.default_members.clone().or_else(|| w.members.clone()))
-        .unwrap_or_default();
+    let mut members = ws.as_ref().and_then(|w| w.members.clone()).unwrap_or_default();
     let mut exclude = ws.as_ref().and_then(|w| w.exclude.clone()).unwrap_or_default();
     members.sort();
     members.dedup();

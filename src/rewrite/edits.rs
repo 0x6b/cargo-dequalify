@@ -1,19 +1,15 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
-    fs::write,
     ops::Range,
-    path::Path,
 };
 
-use anyhow::{Context, Result};
 use syn::File;
 
 use super::{
-    Change,
+    attrs::render_cfg_union,
     collect::{Collector, Occurrence},
     defs::{collect_prelude, collect_unqualified_names},
-    diff::diff,
     resolve::resolve,
 };
 
@@ -25,18 +21,24 @@ pub(super) struct Edit {
 pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let unqualified = collect_unqualified_names(ast);
-    let by_scope: BTreeMap<&str, Vec<&Occurrence>> =
+    let by_scope: BTreeMap<usize, Vec<&Occurrence>> =
         c.occs.iter().fold(BTreeMap::new(), |mut acc, o| {
-            acc.entry(&o.scope).or_default().push(o);
+            acc.entry(o.scope).or_default().push(o);
             acc
         });
 
     let mut edits = Vec::new();
     by_scope.iter().for_each(|(scope, occs)| {
-        let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
+        let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.first().unwrap());
+        let eligible: Vec<_> = occs
+            .iter()
+            .copied()
+            .filter(|o| o.binding.is_none_or(|id| !c.protected_bindings.contains(&id)))
+            .collect();
         let mut existing = info.imports.clone();
         existing.extend(prelude.iter().cloned());
         existing.extend(info.defs.iter().cloned());
+        existing.extend(info.opaque_names.iter().cloned());
         // Pessimistically include every local visible at any occurrence in this
         // scope: a single import line serves all occurrences, so the chosen
         // short name must avoid collision in any of them.
@@ -45,7 +47,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
             existing.extend(unqualified.iter().cloned());
         }
 
-        let scope_paths: Vec<_> = occs
+        let scope_paths: Vec<_> = eligible
             .iter()
             .map(|o| o.path.clone())
             .collect::<BTreeSet<_>>()
@@ -53,8 +55,9 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
             .collect();
         let strats = resolve(&scope_paths, &existing, &info.mappings);
 
-        let mut by_cfg: BTreeMap<Vec<String>, BTreeSet<String>> = BTreeMap::new();
-        occs.iter()
+        let mut requirements: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
+        eligible
+            .iter()
             .filter_map(|o| strats.get(&o.path).map(|s| (o, s)))
             .for_each(|(o, s)| {
                 let text = if o.suffix.is_empty() {
@@ -70,17 +73,19 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
                     return;
                 }
                 if let Some(u) = s.use_stmt() {
-                    by_cfg.entry(o.cfg.clone()).or_default().insert(u);
+                    requirements.entry(u).or_default().insert(o.cfg.clone());
                 }
                 edits.push(Edit { range: o.span.0..o.span.1, text });
             });
 
         let ind = &info.indent;
-        let blocks: Vec<String> = by_cfg
-            .iter()
-            .flat_map(|(cfg, stmts)| {
-                let pre: String = cfg.iter().map(|c| format!("{ind}#[{c}]\n")).collect();
-                stmts.iter().map(move |s| format!("{pre}{ind}{s}"))
+        let blocks: Vec<String> = requirements
+            .into_iter()
+            .map(|(stmt, conditions)| {
+                let attr = render_cfg_union(conditions)
+                    .map(|condition| format!("{ind}#[cfg({condition})]\n"))
+                    .unwrap_or_default();
+                format!("{attr}{ind}{stmt}")
             })
             .collect();
         if !blocks.is_empty() {
@@ -93,12 +98,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     edits
 }
 
-pub(super) fn apply_edits(
-    path: &Path,
-    src: &str,
-    mut edits: Vec<Edit>,
-    dry: bool,
-) -> Result<Change> {
+pub(super) fn apply_edits(src: &str, mut edits: Vec<Edit>) -> String {
     // Apply edits from the end of the file backwards so positions in earlier
     // edits remain valid. When two edits share a start, the longer (Replace)
     // sorts before the empty-range insertion, so the insertion lands strictly
@@ -106,12 +106,5 @@ pub(super) fn apply_edits(
     edits.sort_by_key(|e| (Reverse(e.range.start), Reverse(e.range.len())));
     let mut out = src.to_string();
     edits.into_iter().for_each(|e| out.replace_range(e.range, &e.text));
-    if out == src {
-        return Ok(Change::None);
-    }
-    if dry {
-        return Ok(Change::Pending(diff(path, src, &out)));
-    }
-    write(path, &out).with_context(|| format!("write {}", path.display()))?;
-    Ok(Change::Written)
+    out
 }

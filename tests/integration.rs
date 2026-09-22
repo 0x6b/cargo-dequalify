@@ -1,7 +1,7 @@
 use std::{fs::read_to_string, io::Write};
 
-use cargo_dequalify::{Change, Options, process_file};
-use tempfile::NamedTempFile;
+use cargo_dequalify::{Change, Options, process_file, process_path};
+use tempfile::{NamedTempFile, tempdir};
 
 fn process_source(src: &str, ignore_roots: &[String]) -> String {
     let mut file = NamedTempFile::new().unwrap();
@@ -13,6 +13,56 @@ fn process_source(src: &str, ignore_roots: &[String]) -> String {
     };
     process_file(&path, &opts).unwrap();
     read_to_string(&path).unwrap()
+}
+
+#[test]
+fn test_batch_write_is_aborted_when_any_file_fails_planning() {
+    let dir = tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"batch\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    let valid = dir.path().join("src/lib.rs");
+    let original = "fn call() { dependency::run(); }\n";
+    std::fs::write(&valid, original).unwrap();
+    std::fs::write(dir.path().join("src/broken.rs"), "fn broken(").unwrap();
+
+    let outcome = process_path(dir.path(), &Options::default()).unwrap();
+
+    assert!(outcome.results.iter().any(|(_, result)| result.is_err()));
+    assert_eq!(read_to_string(valid).unwrap(), original);
+}
+
+#[test]
+fn test_workspace_processes_members_outside_default_members() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"default\", \"other\"]\ndefault-members = [\"default\"]\nresolver = \"3\"\n",
+    )
+    .unwrap();
+    for member in ["default", "other"] {
+        let member_dir = dir.path().join(member);
+        std::fs::create_dir(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{member}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        std::fs::create_dir(member_dir.join("src")).unwrap();
+        std::fs::write(member_dir.join("src/lib.rs"), "fn call() { dependency::run(); }\n")
+            .unwrap();
+    }
+
+    let outcome = process_path(dir.path(), &Options::default()).unwrap();
+
+    assert!(outcome.results.iter().all(|(_, result)| result.is_ok()));
+    for member in ["default", "other"] {
+        let output = read_to_string(dir.path().join(member).join("src/lib.rs")).unwrap();
+        assert!(output.contains("use dependency::run;"), "got:\n{output}");
+    }
 }
 
 #[test]
@@ -1260,7 +1310,8 @@ fn always() {
 
 #[test]
 fn test_cfg_mod_import() {
-    // Modules with #[cfg] should generate imports with matching #[cfg]
+    // Imports inside a cfg-gated module inherit the module's predicate, so
+    // repeating it on each import is redundant.
     let input = r#"
 #[cfg(test)]
 mod tests {
@@ -1270,10 +1321,13 @@ mod tests {
 }
 "#;
     let output = process_source(input, &[]);
-    // The import inside the mod should have cfg(test)
     assert!(
-        output.contains("#[cfg(test)]\n    use tokio::task::spawn;"),
-        "Should have cfg-gated import inside mod, got:\n{output}"
+        output.contains("    use tokio::task::spawn;"),
+        "Should have import inside mod, got:\n{output}"
+    );
+    assert!(
+        !output.contains("    #[cfg(test)]\n    use tokio::task::spawn;"),
+        "Should not repeat the module's cfg on its import, got:\n{output}"
     );
 }
 
@@ -1300,7 +1354,8 @@ impl Foo {
 
 #[test]
 fn test_multiple_cfg_attrs() {
-    // Multiple cfg attributes should all be stacked on the same use statement
+    // The module cfg is inherited, while the nested function's additional cfg
+    // must still be copied to the import.
     let input = r#"
 #[cfg(unix)]
 mod platform {
@@ -1311,18 +1366,15 @@ mod platform {
 }
 "#;
     let output = process_source(input, &[]);
-    // Both cfg attributes should be stacked on the same use statement
-    // The order is sorted alphabetically: cfg(feature = "async") before cfg(unix)
     assert!(
-        output
-            .contains("#[cfg(feature = \"async\")]\n    #[cfg(unix)]\n    use tokio::task::spawn;"),
-        "Should have both cfg attributes stacked on use statement, got:\n{output}"
+        output.contains("#[cfg(feature = \"async\")]\n    use tokio::task::spawn;"),
+        "Should retain only the function's additional cfg on the import, got:\n{output}"
     );
 }
 
 #[test]
 fn test_same_import_different_cfg() {
-    // Same import used in different cfg contexts should generate separate imports
+    // One import requirement is the union of all conditions that need it.
     let input = r#"
 #[cfg(unix)]
 fn unix_spawn() {
@@ -1335,21 +1387,67 @@ fn windows_spawn() {
 }
 "#;
     let output = process_source(input, &[]);
-    // Should have cfg(unix) import
     assert!(
-        output.contains("#[cfg(unix)]\nuse tokio::task::spawn;"),
-        "Should have unix cfg-gated import, got:\n{output}"
+        output.contains("#[cfg(any(unix, windows))]\nuse tokio::task::spawn;"),
+        "Should have one import under the union of both conditions, got:\n{output}"
     );
-    // Should have cfg(windows) import
-    assert!(
-        output.contains("#[cfg(windows)]\nuse tokio::task::spawn;"),
-        "Should have windows cfg-gated import, got:\n{output}"
-    );
+    assert_eq!(output.matches("use tokio::task::spawn;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_weaker_cfg_requirement_subsumes_stronger_one() {
+    let input = r#"
+#[cfg(feature = "a")]
+fn under_a() {
+    tokio::task::spawn(async {});
+}
+
+#[cfg(feature = "a")]
+fn also_under_a() {
+    #[cfg(feature = "b")]
+    let _task = tokio::task::spawn(async {});
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(feature = \"a\")]\nuse tokio::task::spawn;"), "got:\n{output}");
+    assert!(!output.contains("all(feature = \"a\", feature = \"b\")"), "got:\n{output}");
+    assert_eq!(output.matches("use tokio::task::spawn;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_conditional_import_is_not_reused_unconditionally() {
+    let input = r#"
+#[cfg(test)]
+use dependency::run;
+
+fn always() {
+    dependency::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("dependency::run()"), "got:\n{output}");
+    assert!(!output.contains("fn always() {\n    run();"), "got:\n{output}");
+}
+
+#[test]
+fn test_paths_through_conditional_alias_are_left_unchanged() {
+    let input = r#"
+#[cfg(test)]
+use dependency::service;
+
+#[cfg(test)]
+fn test_only() {
+    service::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
 }
 
 #[test]
 fn test_cfg_and_non_cfg_same_import() {
-    // Same import used both with and without cfg should generate both
+    // An unconditional import covers the cfg-gated occurrence too. Emitting a
+    // second import would cause E0252 when the predicate is enabled.
     let input = r#"
 fn always() {
     tokio::task::spawn(async {});
@@ -1371,12 +1469,251 @@ fn test_only() {
                 .map(|i| i > 0 && lines[i - 1].contains("#[cfg"))
                 .unwrap_or(false)
     });
-    // Should have cfg(test) gated import (from test_only())
     assert!(
-        output.contains("#[cfg(test)]\nuse tokio::task::spawn;"),
-        "Should have cfg(test) gated import, got:\n{output}"
+        !output.contains("#[cfg(test)]\nuse tokio::task::spawn;"),
+        "Should not duplicate an unconditional import, got:\n{output}"
     );
     assert!(has_non_gated, "Should have non-gated import, got:\n{output}");
+}
+
+#[test]
+fn test_cfg_turbofish_call_gets_matching_import() {
+    let input = r#"
+async fn shutdown_signal() {
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    #[cfg(not(unix))]
+    terminate.await;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(not (unix))]\nuse std::future::pending;"), "got:\n{output}");
+    assert!(output.contains("pending::<()>()"), "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_on_items_expressions_arms_and_fields() {
+    let input = r#"
+#[cfg(windows)]
+const PLATFORM: fn() = dependency::run;
+
+struct Config {
+    #[cfg(windows)]
+    value: dependency::Value,
+}
+
+fn call(value: bool) {
+    #[cfg(windows)]
+    dependency::run();
+
+    match value {
+        #[cfg(windows)]
+        _ => dependency::run(),
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Value;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::run;"), "got:\n{output}");
+    assert_eq!(output.matches("use dependency::run;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_on_associated_foreign_items_and_function_arguments() {
+    let input = r#"
+trait Service {
+    #[cfg(windows)]
+    const VALUE: dependency::Value;
+}
+
+impl Service for () {
+    #[cfg(windows)]
+    const VALUE: dependency::Value = dependency::Value::new();
+}
+
+unsafe extern "C" {
+    #[cfg(windows)]
+    static VALUE: dependency::Value;
+}
+
+fn call(#[cfg(windows)] value: dependency::Value) {}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Value;"), "got:\n{output}");
+    assert_eq!(output.matches("use dependency::Value;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_on_generic_params_struct_values_and_patterns() {
+    let input = r#"
+struct Wrapper<#[cfg(windows)] T: dependency::Trait> {
+    marker: std::marker::PhantomData<T>,
+}
+
+fn call(value: Config) {
+    let config = Config {
+        #[cfg(windows)]
+        value: dependency::make(),
+    };
+    let Config {
+        #[cfg(windows)]
+        value: dependency::Variant::Value,
+    } = config;
+}
+"#;
+    let output = process_source(input, &["std".to_owned()]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Trait;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Variant;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::make;"), "got:\n{output}");
+}
+
+#[test]
+fn test_leading_colon_path_is_left_unchanged() {
+    let input = r#"
+fn call() {
+    ::dependency::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
+}
+
+#[test]
+fn test_block_local_import_does_not_replace_outer_binding() {
+    let input = r#"
+use outer::service;
+
+fn call() {
+    {
+        use inner::service;
+        service::inside();
+    }
+    service::outside();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use inner::service::inside;"), "got:\n{output}");
+    assert!(output.contains("use outer::service::outside;"), "got:\n{output}");
+    assert!(!output.contains("use inner::service::outside;"), "got:\n{output}");
+}
+
+#[test]
+fn test_alias_used_in_opaque_macro_is_not_partially_dequalified() {
+    // `assert!` is intentionally opaque to the rewriter. Rewriting only the
+    // visible use of `header` could let a later lint delete the module import,
+    // leaving the macro's `header::AUTHORIZATION` unresolved.
+    let input = r#"
+use axum::http::header;
+
+fn production() {
+    let _ = header::COOKIE;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(headers: Headers) {
+        assert!(headers.get(header::AUTHORIZATION).is_none());
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
+}
+
+#[test]
+fn test_opaque_macro_protects_binding_not_name_globally() {
+    let input = r#"
+mod opaque {
+    use one::header;
+
+    fn check() {
+        assert!(header::ENABLED);
+    }
+}
+
+mod editable {
+    use two::header;
+
+    fn value() {
+        let _ = header::VALUE;
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("assert!(header::ENABLED)"), "got:\n{output}");
+    assert!(output.contains("use two::header::VALUE;"), "got:\n{output}");
+    assert!(output.contains("let _ = VALUE;"), "got:\n{output}");
+}
+
+#[test]
+fn test_opaque_macro_protects_alias_identity_not_target() {
+    let input = r#"
+use dependency::service as opaque;
+use dependency::service as editable;
+
+fn check() {
+    assert!(opaque::ENABLED);
+    let _ = editable::VALUE;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("assert!(opaque::ENABLED)"), "got:\n{output}");
+    assert!(output.contains("use dependency::service::VALUE;"), "got:\n{output}");
+    assert!(output.contains("let _ = VALUE;"), "got:\n{output}");
+}
+
+#[test]
+fn test_module_aliases_do_not_leak_into_siblings() {
+    let input = r#"
+mod first {
+    use one::service;
+
+    fn call() {
+        service::start();
+    }
+}
+
+mod second {
+    use two::service;
+
+    fn call() {
+        service::stop();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use one::service::start;"), "got:\n{output}");
+    assert!(output.contains("use two::service::stop;"), "got:\n{output}");
+    assert!(!output.contains("use one::service::stop;"), "got:\n{output}");
+    assert!(!output.contains("use two::service::start;"), "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_exclusive_modules_with_same_name_have_distinct_scopes() {
+    let input = r#"
+#[cfg(unix)]
+mod platform {
+    fn run() {
+        unix_dependency::start();
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    fn run() {
+        windows_dependency::stop();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    let unix_module = output.split("#[cfg(windows)]").next().unwrap();
+    let windows_module = output.split("#[cfg(windows)]").nth(1).unwrap();
+    assert!(unix_module.contains("use unix_dependency::start;"), "got:\n{output}");
+    assert!(!unix_module.contains("windows_dependency::stop"), "got:\n{output}");
+    assert!(windows_module.contains("use windows_dependency::stop;"), "got:\n{output}");
+    assert!(!windows_module.contains("unix_dependency::start"), "got:\n{output}");
 }
 
 #[test]
