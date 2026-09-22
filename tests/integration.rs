@@ -36,6 +36,36 @@ fn test_batch_write_is_aborted_when_any_file_fails_planning() {
 }
 
 #[test]
+fn test_workspace_processes_members_outside_default_members() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"default\", \"other\"]\ndefault-members = [\"default\"]\nresolver = \"3\"\n",
+    )
+    .unwrap();
+    for member in ["default", "other"] {
+        let member_dir = dir.path().join(member);
+        std::fs::create_dir(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{member}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        std::fs::create_dir(member_dir.join("src")).unwrap();
+        std::fs::write(member_dir.join("src/lib.rs"), "fn call() { dependency::run(); }\n")
+            .unwrap();
+    }
+
+    let outcome = process_path(dir.path(), &Options::default()).unwrap();
+
+    assert!(outcome.results.iter().all(|(_, result)| result.is_ok()));
+    for member in ["default", "other"] {
+        let output = read_to_string(dir.path().join(member).join("src/lib.rs")).unwrap();
+        assert!(output.contains("use dependency::run;"), "got:\n{output}");
+    }
+}
+
+#[test]
 fn test_simple_rewrite() {
     let input = r#"
 fn main() {
