@@ -1442,6 +1442,112 @@ async fn shutdown_signal() {
 }
 
 #[test]
+fn test_cfg_on_items_expressions_arms_and_fields() {
+    let input = r#"
+#[cfg(windows)]
+const PLATFORM: fn() = dependency::run;
+
+struct Config {
+    #[cfg(windows)]
+    value: dependency::Value,
+}
+
+fn call(value: bool) {
+    #[cfg(windows)]
+    dependency::run();
+
+    match value {
+        #[cfg(windows)]
+        _ => dependency::run(),
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Value;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::run;"), "got:\n{output}");
+    assert_eq!(output.matches("use dependency::run;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_on_associated_foreign_items_and_function_arguments() {
+    let input = r#"
+trait Service {
+    #[cfg(windows)]
+    const VALUE: dependency::Value;
+}
+
+impl Service for () {
+    #[cfg(windows)]
+    const VALUE: dependency::Value = dependency::Value::new();
+}
+
+unsafe extern "C" {
+    #[cfg(windows)]
+    static VALUE: dependency::Value;
+}
+
+fn call(#[cfg(windows)] value: dependency::Value) {}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Value;"), "got:\n{output}");
+    assert_eq!(output.matches("use dependency::Value;").count(), 1, "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_on_generic_params_struct_values_and_patterns() {
+    let input = r#"
+struct Wrapper<#[cfg(windows)] T: dependency::Trait> {
+    marker: std::marker::PhantomData<T>,
+}
+
+fn call(value: Config) {
+    let config = Config {
+        #[cfg(windows)]
+        value: dependency::make(),
+    };
+    let Config {
+        #[cfg(windows)]
+        value: dependency::Variant::Value,
+    } = config;
+}
+"#;
+    let output = process_source(input, &["std".to_owned()]);
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Trait;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::Variant;"), "got:\n{output}");
+    assert!(output.contains("#[cfg(windows)]\nuse dependency::make;"), "got:\n{output}");
+}
+
+#[test]
+fn test_leading_colon_path_is_left_unchanged() {
+    let input = r#"
+fn call() {
+    ::dependency::run();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
+}
+
+#[test]
+fn test_block_local_import_does_not_replace_outer_binding() {
+    let input = r#"
+use outer::service;
+
+fn call() {
+    {
+        use inner::service;
+        service::inside();
+    }
+    service::outside();
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("use inner::service::inside;"), "got:\n{output}");
+    assert!(output.contains("use outer::service::outside;"), "got:\n{output}");
+    assert!(!output.contains("use inner::service::outside;"), "got:\n{output}");
+}
+
+#[test]
 fn test_alias_used_in_opaque_macro_is_not_partially_dequalified() {
     // `assert!` is intentionally opaque to the rewriter. Rewriting only the
     // visible use of `header` could let a later lint delete the module import,
@@ -1532,6 +1638,32 @@ mod second {
     assert!(output.contains("use two::service::stop;"), "got:\n{output}");
     assert!(!output.contains("use one::service::stop;"), "got:\n{output}");
     assert!(!output.contains("use two::service::start;"), "got:\n{output}");
+}
+
+#[test]
+fn test_cfg_exclusive_modules_with_same_name_have_distinct_scopes() {
+    let input = r#"
+#[cfg(unix)]
+mod platform {
+    fn run() {
+        unix_dependency::start();
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    fn run() {
+        windows_dependency::stop();
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    let unix_module = output.split("#[cfg(windows)]").next().unwrap();
+    let windows_module = output.split("#[cfg(windows)]").nth(1).unwrap();
+    assert!(unix_module.contains("use unix_dependency::start;"), "got:\n{output}");
+    assert!(!unix_module.contains("windows_dependency::stop"), "got:\n{output}");
+    assert!(windows_module.contains("use windows_dependency::stop;"), "got:\n{output}");
+    assert!(!windows_module.contains("unix_dependency::start"), "got:\n{output}");
 }
 
 #[test]

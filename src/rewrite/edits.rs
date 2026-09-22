@@ -26,15 +26,15 @@ pub(super) struct Edit {
 pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     let prelude = collect_prelude(ast);
     let unqualified = collect_unqualified_names(ast);
-    let by_scope: BTreeMap<&str, Vec<&Occurrence>> =
+    let by_scope: BTreeMap<usize, Vec<&Occurrence>> =
         c.occs.iter().fold(BTreeMap::new(), |mut acc, o| {
-            acc.entry(&o.scope).or_default().push(o);
+            acc.entry(o.scope).or_default().push(o);
             acc
         });
 
     let mut edits = Vec::new();
     by_scope.iter().for_each(|(scope, occs)| {
-        let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.get("").unwrap());
+        let info = c.scopes.get(*scope).unwrap_or_else(|| c.scopes.first().unwrap());
         let eligible: Vec<_> = occs
             .iter()
             .copied()

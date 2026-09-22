@@ -61,6 +61,11 @@ pub fn run(cli: &Cli) -> Result<()> {
     diffs.sort_by(|a, b| a.0.cmp(&b.0));
     diffs.iter().for_each(|(_, d)| print!("{d}"));
 
+    let error_count = outcome.results.iter().filter(|(_, result)| result.is_err()).count();
+    if error_count > 0 {
+        bail!("failed to process {error_count} Rust file(s)");
+    }
+
     let any_changes = outcome
         .results
         .iter()
@@ -75,4 +80,36 @@ pub fn run(cli: &Cli) -> Result<()> {
         run_cargo_fmt(&outcome.workspace_root, tc.as_deref(), &outcome.generated_rust_files)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{create_dir, write};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn reports_file_processing_errors() {
+        let dir = tempdir().unwrap();
+        create_dir(dir.path().join("src")).unwrap();
+        write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"broken\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        write(dir.path().join("src/lib.rs"), "fn broken(").unwrap();
+
+        let error = run(&Cli {
+            target: dir.path().to_path_buf(),
+            write: false,
+            allow_dirty: false,
+            ignore_roots: Vec::new(),
+            fmt: None,
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "failed to process 1 Rust file(s)");
+    }
 }
