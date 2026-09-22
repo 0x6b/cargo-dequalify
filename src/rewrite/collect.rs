@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use syn::{
     Attribute, Expr, ExprClosure, ExprPath, ExprStruct, File, FnArg, ImplItemFn, Item, ItemFn,
     ItemImpl, ItemMod, ItemUse, Local, Macro, Pat, PatStruct, PatTupleStruct, Path as SynPath,
-    QSelf, Signature, TraitBound, TraitItemFn, TypePath,
+    QSelf, Signature, Token, TraitBound, TraitItemFn, TypePath,
+    parse::Parser,
+    punctuated::Punctuated,
     spanned::Spanned,
     visit::{self, Visit, visit_pat},
 };
@@ -53,6 +55,10 @@ pub(super) struct Collector<'a> {
     pub(super) mappings: BTreeMap<String, String>,
     internal: BTreeSet<String>,
     cfg: BTreeSet<String>,
+    /// Leading names of qualified paths found inside macros whose arguments
+    /// we cannot parse. Rewriting other uses of one of these names could make
+    /// its module import look unused even though the opaque macro still needs it.
+    opaque_macro_roots: BTreeSet<String>,
     /// Stack of locals introduced by the enclosing function/closure frames.
     fn_locals: Vec<BTreeSet<String>>,
 }
@@ -66,7 +72,11 @@ fn path_byte_span(path: &SynPath, lines: &Lines<'_>) -> Option<(usize, usize)> {
 }
 
 impl<'a> Collector<'a> {
-    pub(super) fn new(ignore: &'a BTreeSet<String>, lines: &'a Lines<'a>) -> Self {
+    pub(super) fn new(
+        ignore: &'a BTreeSet<String>,
+        lines: &'a Lines<'a>,
+        opaque_macro_roots: BTreeSet<String>,
+    ) -> Self {
         Self {
             occs: Vec::new(),
             ignore,
@@ -76,6 +86,7 @@ impl<'a> Collector<'a> {
             mappings: BTreeMap::new(),
             internal: BTreeSet::new(),
             cfg: BTreeSet::new(),
+            opaque_macro_roots,
             fn_locals: Vec::new(),
         }
     }
@@ -179,7 +190,7 @@ impl<'a> Collector<'a> {
             return;
         }
         let first = segs[0].ident.to_string();
-        if self.internal.contains(&first) {
+        if self.internal.contains(&first) || self.opaque_macro_roots.contains(&first) {
             return;
         }
 
@@ -269,16 +280,18 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_local(&mut self, n: &Local) {
-        if let Some(init) = &n.init {
-            self.visit_expr(&init.expr);
-            if let Some((_, e)) = &init.diverge {
-                self.visit_expr(e);
+        self.with_cfg(&n.attrs, |s| {
+            if let Some(init) = &n.init {
+                s.visit_expr(&init.expr);
+                if let Some((_, e)) = &init.diverge {
+                    s.visit_expr(e);
+                }
             }
-        }
-        let mut locals = BTreeSet::new();
-        collect_pat(&n.pat, &mut locals);
-        locals.into_iter().for_each(|name| self.add_local(name));
-        visit_pat(self, &n.pat);
+            let mut locals = BTreeSet::new();
+            collect_pat(&n.pat, &mut locals);
+            locals.into_iter().for_each(|name| s.add_local(name));
+            visit_pat(s, &n.pat);
+        });
     }
 
     fn visit_item_impl(&mut self, n: &ItemImpl) {
@@ -301,37 +314,35 @@ impl Visit<'_> for Collector<'_> {
     }
 
     fn visit_item_mod(&mut self, n: &ItemMod) {
-        self.with_cfg(&n.attrs, |s| {
-            let Some((brace, items)) = &n.content else {
-                visit::visit_item_mod(s, n);
-                return;
-            };
-            s.scope.push(n.ident.to_string());
-            let scope = s.cur_scope();
-            let acc = accumulate_uses(items);
-            let defs = collect_defs(items);
-            let indent = items.first().map_or_else(
-                || " ".repeat(DEFAULT_INDENT_WIDTH * s.scope.len()),
-                |i| " ".repeat(i.span().start().column),
-            );
-            let pos = acc
-                .last_use_line
-                .map_or_else(|| s.lines.end(brace.span.open().end().line), |l| s.lines.end(l));
-            s.scopes.insert(
-                scope,
-                ScopeInfo {
-                    pos,
-                    imports: acc.imports,
-                    indent,
-                    has_glob: acc.has_glob,
-                    mappings: acc.mappings,
-                    defs,
-                    super_glob: acc.super_glob,
-                },
-            );
-            visit::visit_item_mod(s, n);
-            s.scope.pop();
-        });
+        let Some((brace, items)) = &n.content else {
+            visit::visit_item_mod(self, n);
+            return;
+        };
+        self.scope.push(n.ident.to_string());
+        let scope = self.cur_scope();
+        let acc = accumulate_uses(items);
+        let defs = collect_defs(items);
+        let indent = items.first().map_or_else(
+            || " ".repeat(DEFAULT_INDENT_WIDTH * self.scope.len()),
+            |i| " ".repeat(i.span().start().column),
+        );
+        let pos = acc
+            .last_use_line
+            .map_or_else(|| self.lines.end(brace.span.open().end().line), |l| self.lines.end(l));
+        self.scopes.insert(
+            scope,
+            ScopeInfo {
+                pos,
+                imports: acc.imports,
+                indent,
+                has_glob: acc.has_glob,
+                mappings: acc.mappings,
+                defs,
+                super_glob: acc.super_glob,
+            },
+        );
+        visit::visit_item_mod(self, n);
+        self.scope.pop();
     }
 
     fn visit_macro(&mut self, n: &Macro) {
@@ -397,7 +408,7 @@ pub(super) fn collect_occurrences<'a>(
     lines: &'a Lines<'a>,
     ignore: &'a BTreeSet<String>,
 ) -> Collector<'a> {
-    let mut c = Collector::new(ignore, lines);
+    let mut c = Collector::new(ignore, lines, collect_opaque_macro_roots(ast));
     c.scopes.insert(String::new(), file_scope(ast, lines));
     Visit::visit_file(&mut c, ast);
 
@@ -429,6 +440,56 @@ pub(super) fn collect_occurrences<'a>(
         }
     }
     c
+}
+
+fn collect_opaque_macro_roots(ast: &File) -> BTreeSet<String> {
+    struct OpaqueMacroVisitor(BTreeSet<String>);
+
+    impl Visit<'_> for OpaqueMacroVisitor {
+        fn visit_macro(&mut self, n: &Macro) {
+            let is_fmt = n.path.segments.len() == 1
+                && n.path
+                    .segments
+                    .first()
+                    .is_some_and(|s| FMT_MACROS.contains(&s.ident.to_string().as_str()));
+            let parsed = is_fmt
+                .then(|| Punctuated::<Expr, Token![,]>::parse_terminated.parse2(n.tokens.clone()))
+                .and_then(Result::ok);
+            if let Some(args) = parsed {
+                args.into_iter().skip(1).for_each(|arg| self.visit_expr(&arg));
+            } else {
+                collect_token_roots(n.tokens.clone(), &mut self.0);
+            }
+        }
+    }
+
+    let mut visitor = OpaqueMacroVisitor(BTreeSet::new());
+    visitor.visit_file(ast);
+    visitor.0
+}
+
+fn collect_token_roots(tokens: proc_macro2::TokenStream, roots: &mut BTreeSet<String>) {
+    use proc_macro2::TokenTree;
+
+    let tokens: Vec<_> = tokens.into_iter().collect();
+    for window in tokens.windows(4) {
+        if let [
+            TokenTree::Ident(root),
+            TokenTree::Punct(a),
+            TokenTree::Punct(b),
+            TokenTree::Ident(_),
+        ] = window
+            && a.as_char() == ':'
+            && b.as_char() == ':'
+        {
+            roots.insert(root.to_string());
+        }
+    }
+    tokens.into_iter().for_each(|token| {
+        if let TokenTree::Group(group) = token {
+            collect_token_roots(group.stream(), roots);
+        }
+    });
 }
 
 fn file_scope(ast: &File, lines: &Lines<'_>) -> ScopeInfo {

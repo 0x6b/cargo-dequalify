@@ -1260,7 +1260,8 @@ fn always() {
 
 #[test]
 fn test_cfg_mod_import() {
-    // Modules with #[cfg] should generate imports with matching #[cfg]
+    // Imports inside a cfg-gated module inherit the module's predicate, so
+    // repeating it on each import is redundant.
     let input = r#"
 #[cfg(test)]
 mod tests {
@@ -1270,10 +1271,13 @@ mod tests {
 }
 "#;
     let output = process_source(input, &[]);
-    // The import inside the mod should have cfg(test)
     assert!(
-        output.contains("#[cfg(test)]\n    use tokio::task::spawn;"),
-        "Should have cfg-gated import inside mod, got:\n{output}"
+        output.contains("    use tokio::task::spawn;"),
+        "Should have import inside mod, got:\n{output}"
+    );
+    assert!(
+        !output.contains("    #[cfg(test)]\n    use tokio::task::spawn;"),
+        "Should not repeat the module's cfg on its import, got:\n{output}"
     );
 }
 
@@ -1300,7 +1304,8 @@ impl Foo {
 
 #[test]
 fn test_multiple_cfg_attrs() {
-    // Multiple cfg attributes should all be stacked on the same use statement
+    // The module cfg is inherited, while the nested function's additional cfg
+    // must still be copied to the import.
     let input = r#"
 #[cfg(unix)]
 mod platform {
@@ -1311,12 +1316,9 @@ mod platform {
 }
 "#;
     let output = process_source(input, &[]);
-    // Both cfg attributes should be stacked on the same use statement
-    // The order is sorted alphabetically: cfg(feature = "async") before cfg(unix)
     assert!(
-        output
-            .contains("#[cfg(feature = \"async\")]\n    #[cfg(unix)]\n    use tokio::task::spawn;"),
-        "Should have both cfg attributes stacked on use statement, got:\n{output}"
+        output.contains("#[cfg(feature = \"async\")]\n    use tokio::task::spawn;"),
+        "Should retain only the function's additional cfg on the import, got:\n{output}"
     );
 }
 
@@ -1349,7 +1351,8 @@ fn windows_spawn() {
 
 #[test]
 fn test_cfg_and_non_cfg_same_import() {
-    // Same import used both with and without cfg should generate both
+    // An unconditional import covers the cfg-gated occurrence too. Emitting a
+    // second import would cause E0252 when the predicate is enabled.
     let input = r#"
 fn always() {
     tokio::task::spawn(async {});
@@ -1371,12 +1374,51 @@ fn test_only() {
                 .map(|i| i > 0 && lines[i - 1].contains("#[cfg"))
                 .unwrap_or(false)
     });
-    // Should have cfg(test) gated import (from test_only())
     assert!(
-        output.contains("#[cfg(test)]\nuse tokio::task::spawn;"),
-        "Should have cfg(test) gated import, got:\n{output}"
+        !output.contains("#[cfg(test)]\nuse tokio::task::spawn;"),
+        "Should not duplicate an unconditional import, got:\n{output}"
     );
     assert!(has_non_gated, "Should have non-gated import, got:\n{output}");
+}
+
+#[test]
+fn test_cfg_turbofish_call_gets_matching_import() {
+    let input = r#"
+async fn shutdown_signal() {
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    #[cfg(not(unix))]
+    terminate.await;
+}
+"#;
+    let output = process_source(input, &[]);
+    assert!(output.contains("#[cfg(not (unix))]\nuse std::future::pending;"), "got:\n{output}");
+    assert!(output.contains("pending::<()>()"), "got:\n{output}");
+}
+
+#[test]
+fn test_alias_used_in_opaque_macro_is_not_partially_dequalified() {
+    // `assert!` is intentionally opaque to the rewriter. Rewriting only the
+    // visible use of `header` could let a later lint delete the module import,
+    // leaving the macro's `header::AUTHORIZATION` unresolved.
+    let input = r#"
+use axum::http::header;
+
+fn production() {
+    let _ = header::COOKIE;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(headers: Headers) {
+        assert!(headers.get(header::AUTHORIZATION).is_none());
+    }
+}
+"#;
+    let output = process_source(input, &[]);
+    assert_eq!(output, input);
 }
 
 #[test]

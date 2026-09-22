@@ -75,6 +75,18 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
                 edits.push(Edit { range: o.span.0..o.span.1, text });
             });
 
+        // An unconditional import is available in every cfg context. Emitting
+        // gated copies of it would define the same name twice whenever those
+        // predicates are true.
+        if let Some(unconditional) = by_cfg.get(&Vec::new()).cloned() {
+            by_cfg
+                .iter_mut()
+                .filter(|(cfg, _)| !cfg.is_empty())
+                .for_each(|(_, stmts)| {
+                    stmts.retain(|stmt| !unconditional.contains(stmt));
+                });
+        }
+
         let ind = &info.indent;
         let blocks: Vec<String> = by_cfg
             .iter()
