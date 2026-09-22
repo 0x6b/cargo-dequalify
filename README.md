@@ -50,7 +50,7 @@ Options:
   -V, --version                      Print version
 ```
 
-Rust files marked with `linguist-generated` or `linguist-generated=true` in the workspace root `.gitattributes` are skipped. When `--fmt` is used, those files are also added to rustfmt's temporary `ignore` list. That formatting ignore support is a nightly rustfmt feature, so use `--fmt=nightly` if generated files should also be protected during formatting.
+Rust files whose effective Git attributes include `linguist-generated` or `linguist-generated=true` are skipped. This respects nested `.gitattributes` files and the repository's configured attribute sources. When `--fmt` is used, those files are also added to rustfmt's temporary `ignore` list. That formatting ignore support is a nightly rustfmt feature, so use `--fmt=nightly` if generated files should also be protected during formatting.
 
 ## Conflict Handling
 

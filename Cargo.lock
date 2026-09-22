@@ -129,7 +129,6 @@ dependencies = [
  "dunce",
  "gix",
  "glob",
- "globset",
  "ignore",
  "proc-macro2",
  "quote",

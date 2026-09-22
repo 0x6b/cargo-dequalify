@@ -1,10 +1,10 @@
 use std::{
     ffi::OsStr,
-    fs::read_to_string,
     path::{Path, PathBuf},
 };
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use anyhow::{Context, Result};
+use gix::{attrs::StateRef, discover, worktree::stack::state::attributes::Source};
 use ignore::{DirEntry, WalkBuilder};
 
 pub(super) struct RustFiles {
@@ -12,22 +12,43 @@ pub(super) struct RustFiles {
     pub(super) generated: Vec<PathBuf>,
 }
 
-pub(super) fn rs_files_under(roots: &[PathBuf], workspace_root: &Path) -> RustFiles {
-    let matcher = load_gitattributes(workspace_root);
+pub(super) fn rs_files_under(roots: &[PathBuf], workspace_root: &Path) -> Result<RustFiles> {
+    let candidates: Vec<_> = roots.iter().flat_map(|r| rs_files_in(r)).collect();
+    let Ok(repo) = discover(workspace_root) else {
+        return Ok(RustFiles { files: candidates, generated: Vec::new() });
+    };
+    let worktree_root = repo.workdir().context("git repository has no worktree")?;
+    let index = repo.index_or_load_from_head_or_empty().context("load git index")?;
+    let source = Source::WorktreeThenIdMapping.adjust_for_bare(repo.is_bare());
+    let mut attributes = repo.attributes_only(&index, source).context("load git attributes")?;
+    let mut outcome = attributes.selected_attribute_matches(["linguist-generated"]);
     let mut files = Vec::new();
     let mut generated = Vec::new();
 
-    for file in roots.iter().flat_map(|r| rs_files_in(r)) {
-        let Some(relative) = relative_workspace_path(&file, workspace_root) else {
+    for file in candidates {
+        let Some(repo_relative) = file.strip_prefix(worktree_root).ok() else {
             files.push(file);
             continue;
         };
-
-        if matcher
-            .as_ref()
-            .is_some_and(|matcher| matcher.is_generated(&relative))
-        {
-            generated.push(relative.into());
+        attributes
+            .at_entry(repo_relative, None)
+            .with_context(|| format!("query git attributes for {}", file.display()))?
+            .matching_attributes(&mut outcome);
+        let is_generated =
+            outcome
+                .iter_selected()
+                .next()
+                .is_some_and(|matched| match matched.assignment.state {
+                    StateRef::Set => true,
+                    StateRef::Value(value) => value.as_bstr() == b"true".as_slice(),
+                    StateRef::Unset | StateRef::Unspecified => false,
+                });
+        if is_generated {
+            if let Some(relative) = relative_workspace_path(&file, workspace_root) {
+                generated.push(relative.into());
+            } else {
+                files.push(file);
+            }
         } else {
             files.push(file);
         }
@@ -36,7 +57,7 @@ pub(super) fn rs_files_under(roots: &[PathBuf], workspace_root: &Path) -> RustFi
     generated.sort();
     generated.dedup();
 
-    RustFiles { files, generated }
+    Ok(RustFiles { files, generated })
 }
 
 fn rs_files_in(root: &Path) -> impl Iterator<Item = PathBuf> {
@@ -56,75 +77,6 @@ fn relative_workspace_path(path: &Path, workspace_root: &Path) -> Option<String>
         .map(|path| path.to_string_lossy().replace('\\', "/"))
 }
 
-struct GitAttrRule {
-    glob: Glob,
-    generated: bool,
-}
-
-struct GitAttrMatcher {
-    globset: GlobSet,
-    generated: Vec<bool>,
-}
-
-impl GitAttrMatcher {
-    fn is_generated(&self, path: &str) -> bool {
-        self.globset
-            .matches(path)
-            .last()
-            .is_some_and(|&idx| self.generated[idx])
-    }
-}
-
-fn load_gitattributes(root: &Path) -> Option<GitAttrMatcher> {
-    let content = read_to_string(root.join(".gitattributes")).ok()?;
-    let mut rules = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        let mut parts = line.split_whitespace();
-        let Some(pattern) = parts.next() else {
-            continue;
-        };
-
-        let generated = parts.find_map(|attr| match attr {
-            "linguist-generated" | "linguist-generated=true" => Some(true),
-            "-linguist-generated" | "linguist-generated=false" | "!linguist-generated" => {
-                Some(false)
-            }
-            _ => None,
-        });
-
-        let Some(generated) = generated else {
-            continue;
-        };
-
-        if let Ok(glob) = Glob::new(pattern) {
-            rules.push(GitAttrRule { glob, generated });
-        }
-    }
-
-    if rules.is_empty() {
-        return None;
-    }
-
-    let mut builder = GlobSetBuilder::new();
-    let mut generated = Vec::with_capacity(rules.len());
-
-    for rule in rules {
-        builder.add(rule.glob);
-        generated.push(rule.generated);
-    }
-
-    builder
-        .build()
-        .ok()
-        .map(|globset| GitAttrMatcher { globset, generated })
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::{create_dir_all, write};
@@ -138,30 +90,58 @@ mod tests {
     fn skips_generated_rust_files() {
         let temp = tempdir().unwrap();
         let root = temp.path();
+        gix::init(root).unwrap();
         let src = root.join("src");
         create_dir_all(&src).unwrap();
         write(src.join("lib.rs"), "").unwrap();
         write(src.join("generated.rs"), "").unwrap();
-        write(root.join(".gitattributes"), "src/generated.rs linguist-generated=true\n").unwrap();
+        write(src.join("manual.rs"), "").unwrap();
+        write(
+            root.join(".gitattributes"),
+            "src/generated.rs linguist-generated=true\nsrc/manual.rs linguist-generated=false\n",
+        )
+        .unwrap();
 
-        let files = rs_files_under(&[root.to_path_buf()], root);
+        let mut files = rs_files_under(&[root.to_path_buf()], root).unwrap();
+        files.files.sort();
 
-        assert_eq!(files.files, [src.join("lib.rs")]);
+        assert_eq!(files.files, [src.join("lib.rs"), src.join("manual.rs")]);
         assert_eq!(files.generated, [PathBuf::from("src/generated.rs")]);
     }
 
     #[test]
-    fn later_gitattributes_rule_overrides_earlier_rule() {
-        let mut builder = GlobSetBuilder::new();
-        builder.add(Glob::new("src/*.rs").unwrap());
-        builder.add(Glob::new("src/manual.rs").unwrap());
+    fn nested_gitattributes_override_parent_rules() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        gix::init(root).unwrap();
+        let src = root.join("src");
+        create_dir_all(&src).unwrap();
+        write(src.join("generated.rs"), "").unwrap();
+        write(src.join("manual.rs"), "").unwrap();
+        write(root.join(".gitattributes"), "*.rs linguist-generated\n").unwrap();
+        write(src.join(".gitattributes"), "manual.rs -linguist-generated\n").unwrap();
 
-        let matcher = GitAttrMatcher {
-            globset: builder.build().unwrap(),
-            generated: vec![true, false],
-        };
+        let files = rs_files_under(&[root.to_path_buf()], root).unwrap();
 
-        assert!(matcher.is_generated("src/generated.rs"));
-        assert!(!matcher.is_generated("src/manual.rs"));
+        assert_eq!(files.files, [src.join("manual.rs")]);
+        assert_eq!(files.generated, [PathBuf::from("src/generated.rs")]);
+    }
+
+    #[test]
+    fn star_does_not_match_across_directories() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        gix::init(root).unwrap();
+        let src = root.join("src");
+        let nested = src.join("nested");
+        create_dir_all(&nested).unwrap();
+        write(src.join("generated.rs"), "").unwrap();
+        write(nested.join("manual.rs"), "").unwrap();
+        write(root.join(".gitattributes"), "src/*.rs linguist-generated\n").unwrap();
+
+        let files = rs_files_under(&[root.to_path_buf()], root).unwrap();
+
+        assert_eq!(files.files, [nested.join("manual.rs")]);
+        assert_eq!(files.generated, [PathBuf::from("src/generated.rs")]);
     }
 }
