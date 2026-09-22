@@ -1,20 +1,15 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BTreeSet},
-    fs::write,
     ops::Range,
-    path::Path,
 };
 
-use anyhow::{Context, Result};
 use syn::File;
 
 use super::{
-    Change,
     attrs::render_cfg_union,
     collect::{Collector, Occurrence},
     defs::{collect_prelude, collect_unqualified_names},
-    diff::diff,
     resolve::resolve,
 };
 
@@ -103,12 +98,7 @@ pub(super) fn build_edits(c: &Collector, ast: &File, src: &str) -> Vec<Edit> {
     edits
 }
 
-pub(super) fn apply_edits(
-    path: &Path,
-    src: &str,
-    mut edits: Vec<Edit>,
-    dry: bool,
-) -> Result<Change> {
+pub(super) fn apply_edits(src: &str, mut edits: Vec<Edit>) -> String {
     // Apply edits from the end of the file backwards so positions in earlier
     // edits remain valid. When two edits share a start, the longer (Replace)
     // sorts before the empty-range insertion, so the insertion lands strictly
@@ -116,12 +106,5 @@ pub(super) fn apply_edits(
     edits.sort_by_key(|e| (Reverse(e.range.start), Reverse(e.range.len())));
     let mut out = src.to_string();
     edits.into_iter().for_each(|e| out.replace_range(e.range, &e.text));
-    if out == src {
-        return Ok(Change::None);
-    }
-    if dry {
-        return Ok(Change::Pending(diff(path, src, &out)));
-    }
-    write(path, &out).with_context(|| format!("write {}", path.display()))?;
-    Ok(Change::Written)
+    out
 }

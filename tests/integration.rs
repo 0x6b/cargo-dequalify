@@ -1,7 +1,7 @@
 use std::{fs::read_to_string, io::Write};
 
-use cargo_dequalify::{Change, Options, process_file};
-use tempfile::NamedTempFile;
+use cargo_dequalify::{Change, Options, process_file, process_path};
+use tempfile::{NamedTempFile, tempdir};
 
 fn process_source(src: &str, ignore_roots: &[String]) -> String {
     let mut file = NamedTempFile::new().unwrap();
@@ -13,6 +13,26 @@ fn process_source(src: &str, ignore_roots: &[String]) -> String {
     };
     process_file(&path, &opts).unwrap();
     read_to_string(&path).unwrap()
+}
+
+#[test]
+fn test_batch_write_is_aborted_when_any_file_fails_planning() {
+    let dir = tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"batch\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    let valid = dir.path().join("src/lib.rs");
+    let original = "fn call() { dependency::run(); }\n";
+    std::fs::write(&valid, original).unwrap();
+    std::fs::write(dir.path().join("src/broken.rs"), "fn broken(").unwrap();
+
+    let outcome = process_path(dir.path(), &Options::default()).unwrap();
+
+    assert!(outcome.results.iter().any(|(_, result)| result.is_err()));
+    assert_eq!(read_to_string(valid).unwrap(), original);
 }
 
 #[test]

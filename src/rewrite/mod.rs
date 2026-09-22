@@ -8,7 +8,11 @@ mod resolve;
 mod source;
 mod use_tree;
 
-use std::{collections::BTreeSet, fs::read_to_string, path::Path};
+use std::{
+    collections::BTreeSet,
+    fs::{read_to_string, write},
+    path::Path,
+};
 
 use anyhow::{Context, Result};
 use collect::collect_occurrences;
@@ -33,12 +37,17 @@ pub enum Change {
     None,
     /// The file was modified on disk (only possible when `dry_run` is false).
     Written,
-    /// The file would change; the unified diff is enclosed
-    /// (only produced when `dry_run` is true).
+    /// The file would change; the unified diff is enclosed. Produced in dry-run
+    /// mode, or when a batch write is aborted because another file failed planning.
     Pending(String),
 }
 
-pub fn process_file(path: &Path, options: &Options) -> Result<Change> {
+pub(crate) enum RewritePlan {
+    Unchanged,
+    Changed { before: String, after: String },
+}
+
+pub(crate) fn plan_file(path: &Path, options: &Options) -> Result<RewritePlan> {
     let src = read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let ast: File = parse_file(&src).with_context(|| format!("parse {}", path.display()))?;
     let lines = Lines::new(&src);
@@ -46,13 +55,33 @@ pub fn process_file(path: &Path, options: &Options) -> Result<Change> {
 
     let c = collect_occurrences(&ast, &lines, &ignore);
     if c.occs.is_empty() {
-        return Ok(Change::None);
+        return Ok(RewritePlan::Unchanged);
     }
 
     let edits = build_edits(&c, &ast, &src);
     if edits.is_empty() {
-        return Ok(Change::None);
+        return Ok(RewritePlan::Unchanged);
     }
 
-    apply_edits(path, &src, edits, options.dry_run)
+    let after = apply_edits(&src, edits);
+    if after == src {
+        Ok(RewritePlan::Unchanged)
+    } else {
+        Ok(RewritePlan::Changed { before: src, after })
+    }
+}
+
+pub(crate) fn apply_plan(path: &Path, plan: RewritePlan, dry_run: bool) -> Result<Change> {
+    let RewritePlan::Changed { before, after } = plan else {
+        return Ok(Change::None);
+    };
+    if dry_run {
+        return Ok(Change::Pending(diff::diff(path, &before, &after)));
+    }
+    write(path, after).with_context(|| format!("write {}", path.display()))?;
+    Ok(Change::Written)
+}
+
+pub fn process_file(path: &Path, options: &Options) -> Result<Change> {
+    apply_plan(path, plan_file(path, options)?, options.dry_run)
 }

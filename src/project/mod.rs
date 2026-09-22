@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use walk::rs_files_under;
 use workspace::{find_cargo_toml, load_workspace, workspace_crate_roots};
 
-use crate::rewrite::{Change, Options, process_file};
+use crate::rewrite::{Change, Options, apply_plan, plan_file};
 
 pub struct ProcessOutcome {
     pub workspace_root: PathBuf,
@@ -27,10 +27,19 @@ pub fn process_path(path: &Path, options: &Options) -> Result<ProcessOutcome> {
     let workspace_root = cargo_toml.parent().unwrap_or(Path::new(".")).to_path_buf();
     let crate_roots = workspace_crate_roots(&cargo_toml, &manifest);
     let rs_files = rs_files_under(&crate_roots, &workspace_root);
-    let results = rs_files
+    let plans: Vec<_> = rs_files
         .files
         .par_iter()
-        .map(|p| (p.clone(), process_file(p, options)))
+        .map(|p| (p.clone(), plan_file(p, options)))
+        .collect();
+    let planning_failed = plans.iter().any(|(_, result)| result.is_err());
+    let dry_run = options.dry_run || planning_failed;
+    let results = plans
+        .into_iter()
+        .map(|(path, plan)| {
+            let result = plan.and_then(|plan| apply_plan(&path, plan, dry_run));
+            (path, result)
+        })
         .collect();
     Ok(ProcessOutcome {
         workspace_root,
